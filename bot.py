@@ -8,7 +8,7 @@ from aiogram.filters import CommandStart, Command, BaseFilter
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
 from aiogram.types import Message, URLInputFile, InlineKeyboardMarkup, InlineKeyboardButton, CallbackQuery
-from aiogram.exceptions import TelegramBadRequest  # <--- ДОБАВЛЕНО
+from aiogram.exceptions import TelegramBadRequest
 
 # --- НАСТРОЙКИ ---
 BOT_TOKEN = os.getenv("BOT_TOKEN")
@@ -351,7 +351,8 @@ async def process_roblox_nick(message: Message, state: FSMContext):
 
 @dp.callback_query(F.data.startswith("setpos_"))
 async def set_initial_position(callback: CallbackQuery):
-    await callback.answer()
+    try: await callback.answer()
+    except TelegramBadRequest: pass
     pos = callback.data.replace("setpos_", "")
     await update_user_field(callback.from_user.id, "position", pos)
     user_data = await get_user(callback.from_user.id)
@@ -364,7 +365,6 @@ async def set_initial_position(callback: CallbackQuery):
 async def cb_profile(callback: CallbackQuery):
     try: await callback.answer()
     except TelegramBadRequest: pass
-    
     user_data = await get_user(callback.from_user.id)
     if not user_data: return
     tg_id, username, display_name, roblox_id, position, status, club_id, is_owner = user_data
@@ -440,7 +440,6 @@ async def cb_change_pos(callback: CallbackQuery):
 async def cb_my_club(callback: CallbackQuery):
     try: await callback.answer()
     except TelegramBadRequest: pass
-    
     user_data = await get_user(callback.from_user.id)
     if not user_data: return
     club_id, is_owner = user_data[6], user_data[7]
@@ -1389,18 +1388,34 @@ async def approve_career(callback: CallbackQuery):
 async def reject_app(callback: CallbackQuery):
     try: await callback.answer()
     except TelegramBadRequest: pass
+    
     parts = callback.data.split("_")
     app_id = int(parts[-1])
     app_data = await get_application(app_id)
+    
+    if not app_data:
+        return
+        
     tg_id = app_data[0]
+    app_type = app_data[1]
+    
     await update_app_status(app_id, "rejected")
     
-    if "club" in callback.data:
-        await callback.message.edit_caption(caption=f"❌ Заявка на клуб отклонена.")
+    if app_type == "club_app":
+        try:
+            await callback.message.edit_caption(caption=f"❌ Заявка на клуб отклонена.")
+        except TelegramBadRequest:
+            await callback.message.edit_text(f"❌ Заявка на клуб отклонена.")
     else:
-        await callback.message.edit_text(f"❌ Заявка #{app_id} отклонена.")
+        try:
+            await callback.message.edit_text(f"❌ Заявка #{app_id} отклонена.")
+        except TelegramBadRequest:
+            pass
         
-    await bot.send_message(tg_id, "❌ К сожалению, ваша заявка была отклонена.")
+    try:
+        await bot.send_message(tg_id, "❌ К сожалению, ваша заявка была отклонена.")
+    except Exception:
+        pass
 
 # --- ИНФОРМАЦИЯ ---
 @dp.callback_query(F.data == "info")
@@ -1552,7 +1567,6 @@ async def main():
     except Exception as e:
         print(f"Не удалось отправить уведомление в канал: {e}")
 
-    # drop_pending_updates=True игнорирует старые кнопки, нажатые во время выключения бота
     await dp.start_polling(bot, drop_pending_updates=True)
 
 if __name__ == "__main__":
