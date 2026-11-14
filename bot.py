@@ -1,6 +1,8 @@
 import asyncio
 import aiosqlite
 import aiohttp
+import os
+from datetime import datetime, timedelta
 from aiogram import Bot, Dispatcher, types, F
 from aiogram.filters import CommandStart, Command, BaseFilter
 from aiogram.fsm.context import FSMContext
@@ -8,11 +10,12 @@ from aiogram.fsm.state import State, StatesGroup
 from aiogram.types import Message, URLInputFile, InlineKeyboardMarkup, InlineKeyboardButton, CallbackQuery
 
 # --- НАСТРОЙКИ ---
-BOT_TOKEN = "8846789160:AAFkbP2SUZz0R5NiTdusKgEThHHNPjZqf_Q"
+# Токен берется из переменных окружения хостинга
+BOT_TOKEN = os.getenv("BOT_TOKEN")
 DB_PATH = "users.db"
 
 OWNER_ID = 2046978907
-CHANNEL_ID = "@TMRagdollSoccer"
+CHANNEL_ID = "@proverkabota192" # <--- УКАЖИ ЗДЕСЬ ЮЗЕРНЕЙМ НОВОГО КАНАЛА
 
 # --- ИНИЦИАЛИЗАЦИЯ ---
 bot = Bot(token=BOT_TOKEN)
@@ -69,7 +72,6 @@ class Form(StatesGroup):
     entering_new_admin_id = State()
     entering_rename_club = State()
     
-    # Состояния для рекламы
     entering_ad_text = State()
     entering_ad_link = State()
 
@@ -117,6 +119,9 @@ async def init_db():
                 status TEXT DEFAULT 'pending'
             )
         """)
+        # Добавляем колонку для времени создания заявки
+        try: await db.execute("ALTER TABLE applications ADD COLUMN created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP")
+        except aiosqlite.OperationalError: pass
         
         await db.execute("""
             CREATE TABLE IF NOT EXISTS settings (
@@ -170,6 +175,41 @@ async def notify_admins(text: str, reply_markup=None, photo=None):
                 await bot.send_message(admin_id, text, parse_mode="HTML", reply_markup=reply_markup)
         except Exception:
             pass
+
+# --- ПРОВЕРКА ЛИМИТОВ ---
+async def check_limit(telegram_id: int, app_type: str, daily_limit: int, cooldown_hours: float) -> tuple[bool, str]:
+    async with aiosqlite.connect(DB_PATH) as db:
+        # Проверка дневного лимита
+        if daily_limit > 0:
+            async with db.execute(
+                "SELECT COUNT(*) FROM applications WHERE telegram_id = ? AND type = ? AND date(created_at) = date('now')",
+                (telegram_id, app_type)
+            ) as cursor:
+                count = (await cursor.fetchone())[0]
+                if count >= daily_limit:
+                    return False, f"❌ Вы достигли дневного лимита ({daily_limit} раз(а) в день) для этого действия. Попробуйте завтра."
+
+        # Проверка кулдауна
+        if cooldown_hours > 0:
+            async with db.execute(
+                "SELECT created_at FROM applications WHERE telegram_id = ? AND type = ? ORDER BY id DESC LIMIT 1",
+                (telegram_id, app_type)
+            ) as cursor:
+                row = await cursor.fetchone()
+                if row and row[0]:
+                    last_time_str = row[0]
+                    try:
+                        # SQLite хранит время в UTC формате 'YYYY-MM-DD HH:MM:SS'
+                        last_time = datetime.strptime(last_time_str, "%Y-%m-%d %H:%M:%S")
+                        now = datetime.utcnow()
+                        time_diff = now - last_time
+                        if time_diff < timedelta(hours=cooldown_hours):
+                            remaining = timedelta(hours=cooldown_hours) - time_diff
+                            minutes = int(remaining.total_seconds() // 60)
+                            return False, f"⏳ Подождите, пожалуйста. Следующая попытка будет доступна через {minutes} мин."
+                    except ValueError:
+                        pass
+    return True, ""
 
 # Стандартные функции БД
 async def get_user(telegram_id: int):
@@ -453,6 +493,13 @@ async def cb_club_roster(callback: CallbackQuery):
 @dp.callback_query(F.data == "club_search_players")
 async def cb_club_search_players(callback: CallbackQuery, state: FSMContext):
     await callback.answer()
+    
+    # Проверка лимитов
+    can_proceed, error_msg = await check_limit(callback.from_user.id, "club_search", daily_limit=2, cooldown_hours=2)
+    if not can_proceed:
+        await callback.answer(error_msg, show_alert=True)
+        return
+
     await callback.message.edit_text(
         "🔍 <b>Поиск игроков</b>\n\nШаг 1 из 2. Напишите, какие позиции вам нужны (например: Нападающий, Защитник):", 
         parse_mode="HTML", 
@@ -701,10 +748,17 @@ async def approve_friendly(callback: CallbackQuery):
     except Exception as e:
         await callback.message.edit_text(f"⚠️ Ошибка: {e}")
 
-# --- НОВОЕ: РАЗМЕСТИТЬ ОБЪЯВЛЕНИЕ ---
+# --- РАЗМЕСТИТЬ ОБЪЯВЛЕНИЕ ---
 @dp.callback_query(F.data == "advertise")
 async def cb_advertise(callback: CallbackQuery, state: FSMContext):
     await callback.answer()
+    
+    # Проверка лимитов (1 раз в день)
+    can_proceed, error_msg = await check_limit(callback.from_user.id, "ad", daily_limit=1, cooldown_hours=0)
+    if not can_proceed:
+        await callback.answer(error_msg, show_alert=True)
+        return
+
     await callback.message.edit_text(
         "📢 <b>Размещение объявления</b>\n\n"
         "Шаг 1 из 2. Напишите текст, который хотите опубликовать в канале (реклама канала, новостника и т.д.):",
@@ -765,6 +819,12 @@ async def cb_search_club(callback: CallbackQuery, state: FSMContext):
     user_data = await get_user(callback.from_user.id)
     if not user_data or user_data[4] == 'Не выбрана':
         await callback.message.answer("❌ Сначала выберите позицию в профиле.")
+        return
+
+    # Проверка лимитов (2 раза в день, кулдаун 2 часа)
+    can_proceed, error_msg = await check_limit(callback.from_user.id, "free_agent", daily_limit=2, cooldown_hours=2)
+    if not can_proceed:
+        await callback.answer(error_msg, show_alert=True)
         return
 
     await callback.message.edit_text("🛡 <b>Создание объявления: Свободный агент</b>\n\nНапишите ваши <b>требования</b>:", parse_mode="HTML", reply_markup=InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="⬅️ Отмена", callback_data="open_menu")]]))
