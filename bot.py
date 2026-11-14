@@ -8,13 +8,14 @@ from aiogram.filters import CommandStart, Command, BaseFilter
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
 from aiogram.types import Message, URLInputFile, InlineKeyboardMarkup, InlineKeyboardButton, CallbackQuery
+from aiogram.exceptions import TelegramBadRequest  # <--- ДОБАВЛЕНО
 
 # --- НАСТРОЙКИ ---
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 DB_PATH = "users.db"
 
 OWNER_ID = 2046978907
-CHANNEL_ID = "@TMRagdollSoccer" # ОБНОВЛЕНО
+CHANNEL_ID = "@TMRagdollSoccer"
 
 # --- ИНИЦИАЛИЗАЦИЯ ---
 bot = Bot(token=BOT_TOKEN)
@@ -118,7 +119,6 @@ async def init_db():
                 status TEXT DEFAULT 'pending'
             )
         """)
-        # ИСПРАВЛЕНО: Убрано DEFAULT CURRENT_TIMESTAMP
         try: await db.execute("ALTER TABLE applications ADD COLUMN created_at DATETIME")
         except aiosqlite.OperationalError: pass
         
@@ -178,7 +178,6 @@ async def notify_admins(text: str, reply_markup=None, photo=None):
 # --- ПРОВЕРКА ЛИМИТОВ ---
 async def check_limit(telegram_id: int, app_type: str, daily_limit: int, cooldown_hours: float) -> tuple[bool, str]:
     async with aiosqlite.connect(DB_PATH) as db:
-        # Проверка дневного лимита
         if daily_limit > 0:
             async with db.execute(
                 "SELECT COUNT(*) FROM applications WHERE telegram_id = ? AND type = ? AND date(created_at) = date('now')",
@@ -188,7 +187,6 @@ async def check_limit(telegram_id: int, app_type: str, daily_limit: int, cooldow
                 if count >= daily_limit:
                     return False, f"❌ Вы достигли дневного лимита ({daily_limit} раз(а) в день) для этого действия. Попробуйте завтра."
 
-        # Проверка кулдауна
         if cooldown_hours > 0:
             async with db.execute(
                 "SELECT created_at FROM applications WHERE telegram_id = ? AND type = ? ORDER BY id DESC LIMIT 1",
@@ -198,7 +196,6 @@ async def check_limit(telegram_id: int, app_type: str, daily_limit: int, cooldow
                 if row and row[0]:
                     last_time_str = row[0]
                     try:
-                        # SQLite хранит время в UTC формате 'YYYY-MM-DD HH:MM:SS'
                         last_time = datetime.strptime(last_time_str, "%Y-%m-%d %H:%M:%S")
                         now = datetime.utcnow()
                         time_diff = now - last_time
@@ -236,7 +233,6 @@ async def update_user_field(telegram_id: int, field: str, value):
 
 async def create_application(telegram_id: int, app_type: str, text1: str, text2: str, text3: str):
     async with aiosqlite.connect(DB_PATH) as db:
-        # ИСПРАВЛЕНО: Добавлено CURRENT_TIMESTAMP
         cursor = await db.execute(
             "INSERT INTO applications (telegram_id, type, text1, text2, text3, created_at) VALUES (?, ?, ?, ?, ?, CURRENT_TIMESTAMP)",
             (telegram_id, app_type, text1, text2, text3)
@@ -366,7 +362,9 @@ async def set_initial_position(callback: CallbackQuery):
 # --- ПРОФИЛЬ ---
 @dp.callback_query(F.data == "profile")
 async def cb_profile(callback: CallbackQuery):
-    await callback.answer()
+    try: await callback.answer()
+    except TelegramBadRequest: pass
+    
     user_data = await get_user(callback.from_user.id)
     if not user_data: return
     tg_id, username, display_name, roblox_id, position, status, club_id, is_owner = user_data
@@ -397,7 +395,8 @@ async def cb_profile(callback: CallbackQuery):
 
 @dp.callback_query(F.data == "change_nick")
 async def cb_change_nick(callback: CallbackQuery, state: FSMContext):
-    await callback.answer()
+    try: await callback.answer()
+    except TelegramBadRequest: pass
     await callback.message.edit_text("Введите ваш новый Roblox username.\nОн будет отправлен на проверку администрации.", reply_markup=InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="⬅️ Отмена", callback_data="open_menu")]]))
     await state.set_state(Form.changing_nick)
 
@@ -427,7 +426,8 @@ async def process_nick_change(message: Message, state: FSMContext):
 
 @dp.callback_query(F.data == "change_pos")
 async def cb_change_pos(callback: CallbackQuery):
-    await callback.answer()
+    try: await callback.answer()
+    except TelegramBadRequest: pass
     pos_kb = InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="🧤 Вратарь", callback_data="setpos_Вратарь"), InlineKeyboardButton(text="🛡️ Защитник", callback_data="setpos_Защитник")],
         [InlineKeyboardButton(text="🎯 Полузащитник", callback_data="setpos_Полузащитник"), InlineKeyboardButton(text="⚡ Нападающий", callback_data="setpos_Нападающий")],
@@ -438,7 +438,9 @@ async def cb_change_pos(callback: CallbackQuery):
 # --- МОЙ КЛУБ ---
 @dp.callback_query(F.data == "my_club")
 async def cb_my_club(callback: CallbackQuery):
-    await callback.answer()
+    try: await callback.answer()
+    except TelegramBadRequest: pass
+    
     user_data = await get_user(callback.from_user.id)
     if not user_data: return
     club_id, is_owner = user_data[6], user_data[7]
@@ -472,7 +474,8 @@ async def cb_my_club(callback: CallbackQuery):
 
 @dp.callback_query(F.data == "club_roster")
 async def cb_club_roster(callback: CallbackQuery):
-    await callback.answer()
+    try: await callback.answer()
+    except TelegramBadRequest: pass
     user_data = await get_user(callback.from_user.id)
     club_id = user_data[6]
     if not club_id: return
@@ -492,11 +495,13 @@ async def cb_club_roster(callback: CallbackQuery):
 
 @dp.callback_query(F.data == "club_search_players")
 async def cb_club_search_players(callback: CallbackQuery, state: FSMContext):
-    await callback.answer()
+    try: await callback.answer()
+    except TelegramBadRequest: pass
     
     can_proceed, error_msg = await check_limit(callback.from_user.id, "club_search", daily_limit=2, cooldown_hours=2)
     if not can_proceed:
-        await callback.answer(error_msg, show_alert=True)
+        try: await callback.answer(error_msg, show_alert=True)
+        except TelegramBadRequest: pass
         return
 
     await callback.message.edit_text(
@@ -545,7 +550,8 @@ async def process_club_search_reqs(message: Message, state: FSMContext):
 
 @dp.callback_query(F.data == "club_invite")
 async def cb_club_invite(callback: CallbackQuery, state: FSMContext):
-    await callback.answer()
+    try: await callback.answer()
+    except TelegramBadRequest: pass
     await callback.message.edit_text("📩 <b>Приглашение игрока</b>\n\nВведите Roblox ник игрока, которого хотите пригласить:", reply_markup=InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="⬅️ Отмена", callback_data="my_club")]]))
     await state.set_state(Form.invite_player_target)
 
@@ -582,7 +588,8 @@ async def process_invite_target(message: Message, state: FSMContext):
 
 @dp.callback_query(F.data.startswith("accept_inv_"))
 async def cb_accept_invite(callback: CallbackQuery):
-    await callback.answer()
+    try: await callback.answer()
+    except TelegramBadRequest: pass
     _, _, owner_tg_id, player_tg_id = callback.data.split("_")
     
     app_id = await create_application(int(player_tg_id), "player_transfer", owner_tg_id, player_tg_id, "pending_transfer")
@@ -602,11 +609,14 @@ async def cb_accept_invite(callback: CallbackQuery):
 
 @dp.callback_query(F.data.startswith("decline_inv_"))
 async def cb_decline_invite(callback: CallbackQuery):
-    await callback.answer()
+    try: await callback.answer()
+    except TelegramBadRequest: pass
     await callback.message.edit_text("❌ Вы отклонили приглашение клуба.")
 
 @dp.callback_query(F.data.startswith("approve_transfer_"), IsAdmin())
 async def cb_approve_transfer(callback: CallbackQuery):
+    try: await callback.answer()
+    except TelegramBadRequest: pass
     app_id = int(callback.data.split("_")[2])
     app_data = await get_application(app_id)
     _, _, owner_tg_id, player_tg_id, _ = app_data
@@ -633,7 +643,8 @@ async def cb_approve_transfer(callback: CallbackQuery):
 
 @dp.callback_query(F.data == "club_kick")
 async def cb_club_kick(callback: CallbackQuery):
-    await callback.answer()
+    try: await callback.answer()
+    except TelegramBadRequest: pass
     user_data = await get_user(callback.from_user.id)
     async with aiosqlite.connect(DB_PATH) as db:
         async with db.execute("SELECT telegram_id, roblox_username FROM users WHERE club_id = ? AND is_owner = 0", (user_data[6],)) as cursor:
@@ -652,7 +663,8 @@ async def cb_club_kick(callback: CallbackQuery):
 
 @dp.callback_query(F.data.startswith("kick_"))
 async def cb_kick_player(callback: CallbackQuery):
-    await callback.answer()
+    try: await callback.answer()
+    except TelegramBadRequest: pass
     target_tg_id = int(callback.data.split("_")[1])
     await update_user_field(target_tg_id, "club_id", None)
     await callback.message.edit_text("✅ Игрок исключен из клуба.")
@@ -663,7 +675,8 @@ async def cb_kick_player(callback: CallbackQuery):
 # --- ПОИСК ТОВЫ ---
 @dp.callback_query(F.data == "club_friendly")
 async def cb_club_friendly(callback: CallbackQuery, state: FSMContext):
-    await callback.answer()
+    try: await callback.answer()
+    except TelegramBadRequest: pass
     kb = InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="3x3", callback_data="friendly_fmt_3x3"), InlineKeyboardButton(text="4x4", callback_data="friendly_fmt_4x4")],
         [InlineKeyboardButton(text="⬅️ Отмена", callback_data="my_club")]
@@ -673,7 +686,8 @@ async def cb_club_friendly(callback: CallbackQuery, state: FSMContext):
 
 @dp.callback_query(F.data.startswith("friendly_fmt_"), Form.friendly_format)
 async def cb_friendly_format(callback: CallbackQuery, state: FSMContext):
-    await callback.answer()
+    try: await callback.answer()
+    except TelegramBadRequest: pass
     fmt = callback.data.split("_")[2]
     await state.update_data(fmt=fmt)
     
@@ -687,7 +701,8 @@ async def cb_friendly_format(callback: CallbackQuery, state: FSMContext):
 
 @dp.callback_query(F.data.startswith("friendly_time_"), Form.friendly_time)
 async def cb_friendly_time(callback: CallbackQuery, state: FSMContext):
-    await callback.answer()
+    try: await callback.answer()
+    except TelegramBadRequest: pass
     time_str = callback.data.replace("friendly_time_", "")
     data = await state.get_data()
     fmt = data.get('fmt')
@@ -721,6 +736,8 @@ async def cb_friendly_time(callback: CallbackQuery, state: FSMContext):
 
 @dp.callback_query(F.data.startswith("approve_friendly_"), IsAdmin())
 async def approve_friendly(callback: CallbackQuery):
+    try: await callback.answer()
+    except TelegramBadRequest: pass
     app_id = int(callback.data.split("_")[2])
     app_data = await get_application(app_id)
     tg_id, _, fmt, time_str, club_and_username = app_data
@@ -750,11 +767,13 @@ async def approve_friendly(callback: CallbackQuery):
 # --- РАЗМЕСТИТЬ ОБЪЯВЛЕНИЕ ---
 @dp.callback_query(F.data == "advertise")
 async def cb_advertise(callback: CallbackQuery, state: FSMContext):
-    await callback.answer()
+    try: await callback.answer()
+    except TelegramBadRequest: pass
     
     can_proceed, error_msg = await check_limit(callback.from_user.id, "ad", daily_limit=1, cooldown_hours=0)
     if not can_proceed:
-        await callback.answer(error_msg, show_alert=True)
+        try: await callback.answer(error_msg, show_alert=True)
+        except TelegramBadRequest: pass
         return
 
     await callback.message.edit_text(
@@ -796,6 +815,8 @@ async def process_ad_link(message: Message, state: FSMContext):
 
 @dp.callback_query(F.data.startswith("approve_ad_"), IsAdmin())
 async def approve_ad(callback: CallbackQuery):
+    try: await callback.answer()
+    except TelegramBadRequest: pass
     app_id = int(callback.data.split("_")[2])
     app_data = await get_application(app_id)
     tg_id, _, ad_text, username, ad_link = app_data
@@ -813,7 +834,8 @@ async def approve_ad(callback: CallbackQuery):
 # --- ПОИСК КЛУБА (СВОБОДНЫЙ АГЕНТ) ---
 @dp.callback_query(F.data == "search_club")
 async def cb_search_club(callback: CallbackQuery, state: FSMContext):
-    await callback.answer()
+    try: await callback.answer()
+    except TelegramBadRequest: pass
     user_data = await get_user(callback.from_user.id)
     if not user_data or user_data[4] == 'Не выбрана':
         await callback.message.answer("❌ Сначала выберите позицию в профиле.")
@@ -821,7 +843,8 @@ async def cb_search_club(callback: CallbackQuery, state: FSMContext):
 
     can_proceed, error_msg = await check_limit(callback.from_user.id, "free_agent", daily_limit=2, cooldown_hours=2)
     if not can_proceed:
-        await callback.answer(error_msg, show_alert=True)
+        try: await callback.answer(error_msg, show_alert=True)
+        except TelegramBadRequest: pass
         return
 
     await callback.message.edit_text("🛡 <b>Создание объявления: Свободный агент</b>\n\nНапишите ваши <b>требования</b>:", parse_mode="HTML", reply_markup=InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="⬅️ Отмена", callback_data="open_menu")]]))
@@ -856,7 +879,8 @@ async def process_contact(message: Message, state: FSMContext):
 # --- КАРЬЕРА ---
 @dp.callback_query(F.data == "career")
 async def cb_career(callback: CallbackQuery):
-    await callback.answer()
+    try: await callback.answer()
+    except TelegramBadRequest: pass
     user_data = await get_user(callback.from_user.id)
     if not user_data: return
     status = user_data[5]
@@ -876,19 +900,26 @@ async def cb_career(callback: CallbackQuery):
 
 @dp.callback_query(F.data == "career_pause")
 async def cb_career_pause(callback: CallbackQuery):
+    try: await callback.answer()
+    except TelegramBadRequest: pass
     await update_user_field(callback.from_user.id, "career_status", "Приостановлена")
-    await callback.answer("Карьера приостановлена.", show_alert=True)
+    try: await callback.answer("Карьера приостановлена.", show_alert=True)
+    except TelegramBadRequest: pass
     await cb_career(callback)
 
 @dp.callback_query(F.data == "career_resume")
 async def cb_career_resume(callback: CallbackQuery):
+    try: await callback.answer()
+    except TelegramBadRequest: pass
     await update_user_field(callback.from_user.id, "career_status", "Активна")
-    await callback.answer("Карьера возобновлена.", show_alert=True)
+    try: await callback.answer("Карьера возобновлена.", show_alert=True)
+    except TelegramBadRequest: pass
     await cb_career(callback)
 
 @dp.callback_query(F.data == "career_finish")
 async def cb_career_finish(callback: CallbackQuery, state: FSMContext):
-    await callback.answer()
+    try: await callback.answer()
+    except TelegramBadRequest: pass
     await callback.message.edit_text("🏁 <b>Завершение карьеры</b>\n\nНапишите причину завершения карьеры:", reply_markup=InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="⬅️ Отмена", callback_data="career")]]))
     await state.set_state(Form.career_finish_reason)
 
@@ -907,7 +938,8 @@ async def process_career_finish(message: Message, state: FSMContext):
 # --- ПОДАТЬ ЗАЯВЛЕНИЕ ---
 @dp.callback_query(F.data == "application")
 async def cb_application(callback: CallbackQuery):
-    await callback.answer()
+    try: await callback.answer()
+    except TelegramBadRequest: pass
     kb = InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="🛡 Заявление на клуб", callback_data="app_club")],
         [InlineKeyboardButton(text="👑 Заявление в администрацию", callback_data="app_admin")],
@@ -917,7 +949,8 @@ async def cb_application(callback: CallbackQuery):
 
 @dp.callback_query(F.data == "app_club")
 async def cb_app_club(callback: CallbackQuery, state: FSMContext):
-    await callback.answer()
+    try: await callback.answer()
+    except TelegramBadRequest: pass
     await callback.message.edit_text("🛡 <b>Заявление на клуб</b>\n\nШаг 1 из 2. Введите название вашего клуба:", reply_markup=InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="⬅️ Отмена", callback_data="application")]]))
     await state.set_state(Form.club_app_name)
 
@@ -947,7 +980,8 @@ async def process_club_logo(message: Message, state: FSMContext):
 
 @dp.callback_query(F.data == "app_admin")
 async def cb_app_admin(callback: CallbackQuery, state: FSMContext):
-    await callback.answer()
+    try: await callback.answer()
+    except TelegramBadRequest: pass
     is_open = await get_setting('admin_apps_open')
     if is_open != 'True':
         await callback.message.edit_text("❌ На данный момент набор в администрацию <b>закрыт</b>.", parse_mode="HTML", reply_markup=InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="⬅️ Назад", callback_data="application")]]))
@@ -983,7 +1017,8 @@ async def process_admin_exp(message: Message, state: FSMContext):
 # --- МОИ ЗАЯВКИ ---
 @dp.callback_query(F.data == "my_apps")
 async def cb_my_apps(callback: CallbackQuery):
-    await callback.answer()
+    try: await callback.answer()
+    except TelegramBadRequest: pass
     apps = await get_user_applications(callback.from_user.id)
     if not apps:
         text = "📨 <b>Мои заявки</b>\n\nУ вас пока нет отправленных заявок."
@@ -1030,7 +1065,8 @@ async def show_admin_club_info(target, club_id):
             
     if not club:
         if isinstance(target, CallbackQuery):
-            await target.answer("Клуб не найден.", show_alert=True)
+            try: await target.answer("Клуб не найден.", show_alert=True)
+            except TelegramBadRequest: pass
         else:
             await target.answer("Клуб не найден.")
         return
@@ -1063,7 +1099,8 @@ async def cmd_admin(message: Message):
 
 @dp.callback_query(F.data == "admin_stats", IsAdmin())
 async def admin_stats(callback: CallbackQuery):
-    await callback.answer()
+    try: await callback.answer()
+    except TelegramBadRequest: pass
     async with aiosqlite.connect(DB_PATH) as db:
         async with db.execute("SELECT COUNT(*) FROM users") as c1: users_count = (await c1.fetchone())[0]
         async with db.execute("SELECT COUNT(*) FROM clubs") as c2: clubs_count = (await c2.fetchone())[0]
@@ -1082,7 +1119,8 @@ async def admin_stats(callback: CallbackQuery):
 
 @dp.callback_query(F.data == "admin_settings", IsAdmin())
 async def admin_settings(callback: CallbackQuery):
-    await callback.answer()
+    try: await callback.answer()
+    except TelegramBadRequest: pass
     is_open = await get_setting('admin_apps_open')
     status_text = "🟢 ОТКРЫТЫ" if is_open == 'True' else "🔴 ЗАКРЫТЫ"
     btn_text = "Закрыть заявки" if is_open == 'True' else "Открыть заявки"
@@ -1096,6 +1134,8 @@ async def admin_settings(callback: CallbackQuery):
 
 @dp.callback_query(F.data == "toggle_admin_apps", IsAdmin())
 async def cb_toggle_admin(callback: CallbackQuery):
+    try: await callback.answer()
+    except TelegramBadRequest: pass
     is_open = await get_setting('admin_apps_open')
     new_val = 'False' if is_open == 'True' else 'True'
     await set_setting('admin_apps_open', new_val)
@@ -1103,12 +1143,14 @@ async def cb_toggle_admin(callback: CallbackQuery):
 
 @dp.callback_query(F.data == "admin_manage_admins", IsAdmin())
 async def admin_manage_admins(callback: CallbackQuery):
-    await callback.answer()
+    try: await callback.answer()
+    except TelegramBadRequest: pass
     await show_admin_manage_admins(callback)
 
 @dp.callback_query(F.data == "admin_add", IsAdmin())
 async def admin_add(callback: CallbackQuery, state: FSMContext):
-    await callback.answer()
+    try: await callback.answer()
+    except TelegramBadRequest: pass
     await callback.message.edit_text(
         "Отправьте <b>Telegram ID</b> пользователя, которого хотите назначить админом.\n\n"
         "<i>(Узнать ID можно у бота @userinfobot)</i>", 
@@ -1143,7 +1185,8 @@ async def process_new_admin(message: Message, state: FSMContext):
 @dp.callback_query(F.data.startswith("admin_remove_"), IsAdmin())
 async def admin_remove(callback: CallbackQuery):
     target_id = int(callback.data.split("_")[2])
-    await callback.answer(f"✅ Админ {target_id} удален.", show_alert=True)
+    try: await callback.answer(f"✅ Админ {target_id} удален.", show_alert=True)
+    except TelegramBadRequest: pass
     
     async with aiosqlite.connect(DB_PATH) as db:
         await db.execute("DELETE FROM admins WHERE telegram_id = ?", (target_id,))
@@ -1153,7 +1196,8 @@ async def admin_remove(callback: CallbackQuery):
 
 @dp.callback_query(F.data == "admin_manage_clubs", IsAdmin())
 async def admin_manage_clubs(callback: CallbackQuery):
-    await callback.answer()
+    try: await callback.answer()
+    except TelegramBadRequest: pass
     
     async with aiosqlite.connect(DB_PATH) as db:
         async with db.execute("SELECT id, name FROM clubs LIMIT 15") as cursor:
@@ -1174,13 +1218,15 @@ async def admin_manage_clubs(callback: CallbackQuery):
 
 @dp.callback_query(F.data.startswith("admin_club_"), IsAdmin())
 async def admin_club_info(callback: CallbackQuery):
-    await callback.answer()
+    try: await callback.answer()
+    except TelegramBadRequest: pass
     club_id = int(callback.data.split("_")[2])
     await show_admin_club_info(callback, club_id)
 
 @dp.callback_query(F.data.startswith("admin_rename_"), IsAdmin())
 async def admin_rename_club(callback: CallbackQuery, state: FSMContext):
-    await callback.answer()
+    try: await callback.answer()
+    except TelegramBadRequest: pass
     club_id = int(callback.data.split("_")[2])
     await state.update_data(rename_club_id=club_id)
     
@@ -1204,7 +1250,8 @@ async def process_rename_club(message: Message, state: FSMContext):
 @dp.callback_query(F.data.startswith("admin_delclub_"), IsAdmin())
 async def admin_delclub(callback: CallbackQuery):
     club_id = int(callback.data.split("_")[2])
-    await callback.answer("Удаление...", show_alert=True)
+    try: await callback.answer("Удаление...", show_alert=True)
+    except TelegramBadRequest: pass
     
     async with aiosqlite.connect(DB_PATH) as db:
         await db.execute("UPDATE users SET club_id = NULL, is_owner = 0 WHERE club_id = ?", (club_id,))
@@ -1215,7 +1262,8 @@ async def admin_delclub(callback: CallbackQuery):
 
 @dp.callback_query(F.data == "admin_back", IsAdmin())
 async def admin_back(callback: CallbackQuery, state: FSMContext):
-    await callback.answer()
+    try: await callback.answer()
+    except TelegramBadRequest: pass
     await state.clear()
     kb = InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="📊 Статистика", callback_data="admin_stats")],
@@ -1228,6 +1276,8 @@ async def admin_back(callback: CallbackQuery, state: FSMContext):
 # --- МОДЕРАЦИЯ ЗАЯВОК ---
 @dp.callback_query(F.data.startswith("approve_agent_"), IsAdmin())
 async def approve_agent(callback: CallbackQuery):
+    try: await callback.answer()
+    except TelegramBadRequest: pass
     app_id = int(callback.data.split("_")[2])
     app_data = await get_application(app_id)
     tg_id, _, position, requirements, contact = app_data
@@ -1244,6 +1294,8 @@ async def approve_agent(callback: CallbackQuery):
 
 @dp.callback_query(F.data.startswith("approve_club_"), IsAdmin())
 async def approve_club(callback: CallbackQuery):
+    try: await callback.answer()
+    except TelegramBadRequest: pass
     app_id = int(callback.data.split("_")[2])
     app_data = await get_application(app_id)
     tg_id, _, club_name, file_id, roblox_name = app_data
@@ -1265,6 +1317,8 @@ async def approve_club(callback: CallbackQuery):
 
 @dp.callback_query(F.data.startswith("approve_clubsearch_"), IsAdmin())
 async def approve_clubsearch(callback: CallbackQuery):
+    try: await callback.answer()
+    except TelegramBadRequest: pass
     app_id = int(callback.data.split("_")[2])
     app_data = await get_application(app_id)
     tg_id, _, needed_pos, reqs, club_name = app_data
@@ -1289,6 +1343,8 @@ async def approve_clubsearch(callback: CallbackQuery):
 
 @dp.callback_query(F.data.startswith("approve_adminapp_"), IsAdmin())
 async def approve_adminapp(callback: CallbackQuery):
+    try: await callback.answer()
+    except TelegramBadRequest: pass
     app_id = int(callback.data.split("_")[2])
     app_data = await get_application(app_id)
     tg_id = app_data[0]
@@ -1298,6 +1354,8 @@ async def approve_adminapp(callback: CallbackQuery):
 
 @dp.callback_query(F.data.startswith("approve_nick_"), IsAdmin())
 async def approve_nick(callback: CallbackQuery):
+    try: await callback.answer()
+    except TelegramBadRequest: pass
     app_id = int(callback.data.split("_")[2])
     app_data = await get_application(app_id)
     tg_id, _, new_nick, new_id, _ = app_data
@@ -1310,6 +1368,8 @@ async def approve_nick(callback: CallbackQuery):
 
 @dp.callback_query(F.data.startswith("approve_career_"), IsAdmin())
 async def approve_career(callback: CallbackQuery):
+    try: await callback.answer()
+    except TelegramBadRequest: pass
     app_id = int(callback.data.split("_")[2])
     app_data = await get_application(app_id)
     tg_id, _, position, reason, _ = app_data
@@ -1327,6 +1387,8 @@ async def approve_career(callback: CallbackQuery):
 
 @dp.callback_query(F.data.startswith("reject_"), IsAdmin())
 async def reject_app(callback: CallbackQuery):
+    try: await callback.answer()
+    except TelegramBadRequest: pass
     parts = callback.data.split("_")
     app_id = int(parts[-1])
     app_data = await get_application(app_id)
@@ -1343,7 +1405,8 @@ async def reject_app(callback: CallbackQuery):
 # --- ИНФОРМАЦИЯ ---
 @dp.callback_query(F.data == "info")
 async def cb_info(callback: CallbackQuery):
-    await callback.answer()
+    try: await callback.answer()
+    except TelegramBadRequest: pass
     info_text = (
         "🏛 <b>О платформе RGS Transfer Market</b>\n\n"
         "Добро пожаловать в официальный бот трансферного рынка RGS. Здесь вы можете найти клуб, собрать свою команду или управлять карьерой.\n\n"
@@ -1371,7 +1434,8 @@ async def cb_info(callback: CallbackQuery):
 # --- ПОДДЕРЖКА (ТИКЕТЫ) ---
 @dp.callback_query(F.data == "support")
 async def cb_support(callback: CallbackQuery):
-    await callback.answer()
+    try: await callback.answer()
+    except TelegramBadRequest: pass
     support_text = (
         "🆘 <b>Служба поддержки</b>\n\n"
         "Если у вас возникли технические проблемы, ошибка при верификации или вопросы по работе трансферного рынка, вы можете создать обращение (тикет).\n"
@@ -1386,7 +1450,8 @@ async def cb_support(callback: CallbackQuery):
 
 @dp.callback_query(F.data == "create_ticket")
 async def cb_create_ticket(callback: CallbackQuery, state: FSMContext):
-    await callback.answer()
+    try: await callback.answer()
+    except TelegramBadRequest: pass
     await callback.message.edit_text(
         "✍️ <b>Напишите ваш вопрос или описание проблемы</b> одним сообщением.\nМы передадим его администрации.",
         parse_mode="HTML",
@@ -1418,6 +1483,8 @@ async def process_ticket_text(message: Message, state: FSMContext):
 
 @dp.callback_query(F.data.startswith("reply_ticket_"), IsAdmin())
 async def cb_admin_reply_ticket(callback: CallbackQuery, state: FSMContext):
+    try: await callback.answer()
+    except TelegramBadRequest: pass
     ticket_id = int(callback.data.split("_")[2])
     
     await state.update_data(ticket_id=ticket_id)
@@ -1454,13 +1521,16 @@ async def process_ticket_reply(message: Message, state: FSMContext):
 
 @dp.callback_query(F.data == "admin_cancel_reply", IsAdmin())
 async def cb_admin_cancel_reply(callback: CallbackQuery, state: FSMContext):
+    try: await callback.answer()
+    except TelegramBadRequest: pass
     await state.clear()
     await callback.message.edit_text("❌ Ответ отменен.")
 
 # --- ОБЩИЕ КНОПКИ ---
 @dp.callback_query(F.data == "open_menu")
 async def cb_open_menu(callback: CallbackQuery, state: FSMContext):
-    await callback.answer()
+    try: await callback.answer()
+    except TelegramBadRequest: pass
     await state.clear()
     user_data = await get_user(callback.from_user.id)
     try: await callback.message.delete()
@@ -1469,7 +1539,8 @@ async def cb_open_menu(callback: CallbackQuery, state: FSMContext):
 
 @dp.callback_query(F.data == "noop")
 async def cb_noop(callback: CallbackQuery):
-    await callback.answer()
+    try: await callback.answer()
+    except TelegramBadRequest: pass
 
 # --- ЗАПУСК ---
 async def main():
@@ -1481,7 +1552,8 @@ async def main():
     except Exception as e:
         print(f"Не удалось отправить уведомление в канал: {e}")
 
-    await dp.start_polling(bot)
+    # drop_pending_updates=True игнорирует старые кнопки, нажатые во время выключения бота
+    await dp.start_polling(bot, drop_pending_updates=True)
 
 if __name__ == "__main__":
     asyncio.run(main())
