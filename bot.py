@@ -16,7 +16,7 @@ DB_PATH = "users.db"
 
 OWNER_ID = 2046978907
 CHANNEL_ID = "@TMRagdollSoccer"
-ADMIN_CHAT_ID = -1004376666585  # <--- ID ГРУППЫ ДЛЯ ЗАЯВОК
+ADMIN_CHAT_ID = -1004376666585
 
 # --- ИНИЦИАЛИЗАЦИЯ ---
 bot = Bot(token=BOT_TOKEN)
@@ -97,7 +97,8 @@ async def init_db():
                 position TEXT DEFAULT 'Не выбрана',
                 career_status TEXT DEFAULT 'Активна',
                 club_id INTEGER DEFAULT NULL,
-                is_owner INTEGER DEFAULT 0
+                is_owner INTEGER DEFAULT 0,
+                telegram_username TEXT
             )
         """)
         try: await db.execute("ALTER TABLE users ADD COLUMN position TEXT DEFAULT 'Не выбрана'")
@@ -107,6 +108,8 @@ async def init_db():
         try: await db.execute("ALTER TABLE users ADD COLUMN club_id INTEGER DEFAULT NULL")
         except aiosqlite.OperationalError: pass
         try: await db.execute("ALTER TABLE users ADD COLUMN is_owner INTEGER DEFAULT 0")
+        except aiosqlite.OperationalError: pass
+        try: await db.execute("ALTER TABLE users ADD COLUMN telegram_username TEXT")
         except aiosqlite.OperationalError: pass
         
         await db.execute("""
@@ -157,7 +160,6 @@ async def is_admin(user_id: int) -> bool:
             return await cursor.fetchone() is not None
 
 async def notify_admins(text: str, reply_markup=None, photo=None):
-    # 1. Отправляем в личку ВЛАДЕЛЬЦУ (OWNER_ID)
     try:
         if photo:
             await bot.send_photo(OWNER_ID, photo=photo, caption=text, parse_mode="HTML", reply_markup=reply_markup)
@@ -166,7 +168,6 @@ async def notify_admins(text: str, reply_markup=None, photo=None):
     except Exception as e:
         print(f"❌ [ОШИБКА] Не удалось отправить сообщение владельцу {OWNER_ID}: {e}")
 
-    # 2. Отправляем в общий чат
     try:
         if photo:
             await bot.send_photo(ADMIN_CHAT_ID, photo=photo, caption=text, parse_mode="HTML", reply_markup=reply_markup)
@@ -175,7 +176,6 @@ async def notify_admins(text: str, reply_markup=None, photo=None):
     except Exception as e:
         print(f"❌ [ОШИБКА] Не удалось отправить сообщение в общий чат {ADMIN_CHAT_ID}: {e}")
 
-# --- ПРОВЕРКА ЛИМИТОВ ---
 async def check_limit(telegram_id: int, app_type: str, daily_limit: int, cooldown_hours: float) -> tuple[bool, str]:
     async with aiosqlite.connect(DB_PATH) as db:
         if daily_limit > 0:
@@ -207,22 +207,23 @@ async def check_limit(telegram_id: int, app_type: str, daily_limit: int, cooldow
                         pass
     return True, ""
 
-# Стандартные функции БД
 async def get_user(telegram_id: int):
     async with aiosqlite.connect(DB_PATH) as db:
         async with db.execute("SELECT telegram_id, roblox_username, display_name, roblox_id, position, career_status, club_id, is_owner FROM users WHERE telegram_id = ?", (telegram_id,)) as cursor:
             return await cursor.fetchone()
 
-async def get_user_by_roblox(username: str):
+async def find_user(query: str):
+    if query.startswith("@"):
+        query = query[1:]
     async with aiosqlite.connect(DB_PATH) as db:
-        async with db.execute("SELECT telegram_id, roblox_username, club_id FROM users WHERE roblox_username = ?", (username,)) as cursor:
+        async with db.execute("SELECT telegram_id, roblox_username, display_name, club_id FROM users WHERE LOWER(roblox_username) = LOWER(?) OR LOWER(telegram_username) = LOWER(?)", (query, query)) as cursor:
             return await cursor.fetchone()
 
-async def save_user(telegram_id: int, username: str, user_id: int, display_name: str):
+async def save_user(telegram_id: int, username: str, user_id: int, display_name: str, tg_username: str = None):
     async with aiosqlite.connect(DB_PATH) as db:
         await db.execute(
-            "INSERT OR REPLACE INTO users (telegram_id, roblox_username, roblox_id, display_name) VALUES (?, ?, ?, ?)",
-            (telegram_id, username, user_id, display_name)
+            "INSERT OR REPLACE INTO users (telegram_id, roblox_username, roblox_id, display_name, telegram_username) VALUES (?, ?, ?, ?, ?)",
+            (telegram_id, username, user_id, display_name, tg_username)
         )
         await db.commit()
 
@@ -266,7 +267,138 @@ async def set_setting(key: str, value: str):
         await db.execute("INSERT OR REPLACE INTO settings (key, value) VALUES (?, ?)", (key, value))
         await db.commit()
 
-# --- МЕНЮ ---
+# --- КОМАНДЫ ДЛЯ ГРУПП ---
+@dp.message(Command("help"))
+async def cmd_help(message: Message):
+    text = (
+        "📖 <b>Доступные команды:</b>\n\n"
+        "👤 /profile [ник] — посмотреть свой профиль или профиль другого игрока\n"
+        "🛡 /club — посмотреть состав своего клуба\n"
+        "📩 /transfer [ник] — пригласить игрока в клуб (только для владельцев)\n"
+        "ℹ️ /help — показать это сообщение\n\n"
+        "🔍 <i>Вместо [ник] можно указать Roblox-ник или Telegram @username.</i>"
+    )
+    await message.answer(text, parse_mode="HTML")
+
+@dp.message(Command("profile"))
+async def cmd_profile(message: Message):
+    args = message.text.split(maxsplit=1)
+    if len(args) > 1:
+        user = await find_user(args[1])
+        if not user:
+            await message.answer("❌ Игрок с таким ником не найден.")
+            return
+        tg_id, roblox_name, display_name, club_id = user
+    else:
+        user = await get_user(message.from_user.id)
+        if not user:
+            await message.answer("❌ Вы еще не зарегистрированы. Напишите боту в личку /start.")
+            return
+        tg_id = user[0]
+        roblox_name = user[1]
+        display_name = user[2]
+        club_id = user[6]
+    
+    club_info = ""
+    if club_id:
+        async with aiosqlite.connect(DB_PATH) as db:
+            async with db.execute("SELECT name, owner_id FROM clubs WHERE id = ?", (club_id,)) as cursor:
+                club = await cursor.fetchone()
+                if club:
+                    role = "Владелец" if club[1] == tg_id else "Игрок"
+                    club_info = f"\n⚽ <b>Клуб:</b> {club[0]} ({role})"
+    else:
+        club_info = "\n⚽ <b>Клуб:</b> Свободный агент 🌴"
+        
+    async with aiosqlite.connect(DB_PATH) as db:
+        async with db.execute("SELECT position, career_status FROM users WHERE telegram_id = ?", (tg_id,)) as cursor:
+            pos_data = await cursor.fetchone()
+            position = pos_data[0] if pos_data else "Не выбрана"
+            status = pos_data[1] if pos_data else "Активна"
+    
+    emoji = POSITIONS.get(position, "❓")
+    text = (
+        f"👤 <b>Профиль:</b> <code>{roblox_name}</code>\n"
+        f"🏷 <b>Display:</b> {display_name}\n"
+        f"{emoji} <b>Позиция:</b> {position}\n"
+        f"🏃‍♂️ <b>Карьера:</b> {status}"
+        f"{club_info}"
+    )
+    await message.answer(text, parse_mode="HTML")
+
+@dp.message(Command("club"))
+async def cmd_club(message: Message):
+    user_data = await get_user(message.from_user.id)
+    if not user_data:
+        await message.answer("❌ Вы не зарегистрированы. Напишите боту в личку /start.")
+        return
+    club_id = user_data[6]
+    if not club_id:
+        await message.answer("❌ Вы не состоите в клубе. Вы свободный агент.")
+        return
+    
+    async with aiosqlite.connect(DB_PATH) as db:
+        async with db.execute("SELECT name FROM clubs WHERE id = ?", (club_id,)) as cursor:
+            club_name = (await cursor.fetchone())[0]
+        async with db.execute("SELECT roblox_username, position, is_owner FROM users WHERE club_id = ?", (club_id,)) as cursor:
+            players = await cursor.fetchall()
+    
+    text = f"🛡 <b>Клуб: {club_name}</b>\n\n"
+    for p in players:
+        emoji = POSITIONS.get(p[1], "")
+        role = "👑 (Владелец)" if p[2] else ""
+        text += f"• <code>{p[0]}</code> — {emoji} {p[1]} {role}\n"
+    
+    await message.answer(text, parse_mode="HTML")
+
+@dp.message(Command("transfer"))
+async def cmd_transfer(message: Message):
+    user_data = await get_user(message.from_user.id)
+    if not user_data:
+        await message.answer("❌ Вы не зарегистрированы. Напишите боту в личку /start.")
+        return
+    if not user_data[7]: 
+        await message.answer("❌ Только владелец клуба может отправлять приглашения.")
+        return
+    
+    args = message.text.split(maxsplit=1)
+    if len(args) < 2:
+        await message.answer("❌ Использование: <code>/transfer @username</code> или <code>/transfer RobloxNick</code>", parse_mode="HTML")
+        return
+    
+    target_query = args[1].strip()
+    target = await find_user(target_query)
+    
+    if not target:
+        await message.answer(f"❌ Игрок <b>{target_query}</b> не найден.", parse_mode="HTML")
+        return
+    
+    target_tg_id, target_roblox, target_display, target_club_id = target
+    
+    if target_club_id is not None:
+        await message.answer("❌ Этот игрок уже состоит в другом клубе.")
+        return
+    
+    async with aiosqlite.connect(DB_PATH) as db:
+        async with db.execute("SELECT name FROM clubs WHERE id = ?", (user_data[6],)) as cursor:
+            club_name = (await cursor.fetchone())[0]
+    
+    invite_kb = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="✅ Принять", callback_data=f"accept_inv_{message.from_user.id}_{target_tg_id}"), InlineKeyboardButton(text="❌ Отклонить", callback_data=f"decline_inv_{target_tg_id}")]
+    ])
+    
+    try:
+        await bot.send_message(
+            target_tg_id, 
+            f"📩 <b>Вам поступило предложение!</b>\n\nКлуб <b>{club_name}</b> приглашает вас в состав.\n\nПринять предложение?", 
+            parse_mode="HTML", 
+            reply_markup=invite_kb
+        )
+        await message.answer(f"✅ Приглашение отправлено игроку <b>{target_roblox}</b>.", parse_mode="HTML")
+    except Exception:
+        await message.answer("❌ Не удалось отправить сообщение игроку. Возможно, он заблокировал бота.")
+
+# --- МЕНЮ И РЕГИСТРАЦИЯ ---
 def get_main_menu():
     keyboard = InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="👤 Мой профиль", callback_data="profile"), InlineKeyboardButton(text="🛡 Мой клуб", callback_data="my_club")],
@@ -293,9 +425,12 @@ async def send_main_menu(message: Message, user_data: tuple = None):
         menu_text = f"🏛 <b>Главное меню RGS | Transfer Market</b>\n\nДобро пожаловать, <b>{user_data[2]}</b>!\nВыберите необходимый раздел:"
     await message.answer(menu_text, reply_markup=get_main_menu(), parse_mode="HTML")
 
-# --- РЕГИСТРАЦИЯ ---
 @dp.message(CommandStart())
 async def cmd_start(message: Message, state: FSMContext):
+    if message.chat.type != "private":
+        await message.answer("👋 Привет! Чтобы зарегистрироваться и пользоваться ботом, перейдите в личные сообщения: @RGS_TransferBot")
+        return
+    
     user_data = await get_user(message.from_user.id)
     if user_data:
         await state.clear()
@@ -340,7 +475,7 @@ async def process_roblox_nick(message: Message, state: FSMContext):
         await message.answer("❌ Аккаунт не найден. Проверьте написание.")
         return
 
-    await save_user(message.from_user.id, username, user_id, display_name)
+    await save_user(message.from_user.id, username, user_id, display_name, message.from_user.username)
     
     pos_kb = InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="🧤 Вратарь", callback_data="setpos_Вратарь"), InlineKeyboardButton(text="🛡️ Защитник", callback_data="setpos_Защитник")],
@@ -360,7 +495,6 @@ async def set_initial_position(callback: CallbackQuery):
     except: pass
     await send_main_menu(callback.message, user_data)
 
-# --- ПРОФИЛЬ ---
 @dp.callback_query(F.data == "profile")
 async def cb_profile(callback: CallbackQuery):
     try: await callback.answer()
@@ -435,7 +569,6 @@ async def cb_change_pos(callback: CallbackQuery):
     ])
     await callback.message.edit_text("Выберите новую позицию:", reply_markup=pos_kb)
 
-# --- МОЙ КЛУБ ---
 @dp.callback_query(F.data == "my_club")
 async def cb_my_club(callback: CallbackQuery):
     try: await callback.answer()
@@ -551,19 +684,20 @@ async def process_club_search_reqs(message: Message, state: FSMContext):
 async def cb_club_invite(callback: CallbackQuery, state: FSMContext):
     try: await callback.answer()
     except TelegramBadRequest: pass
-    await callback.message.edit_text("📩 <b>Приглашение игрока</b>\n\nВведите Roblox ник игрока, которого хотите пригласить:", reply_markup=InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="⬅️ Отмена", callback_data="my_club")]]))
+    await callback.message.edit_text("📩 <b>Приглашение игрока</b>\n\nВведите Roblox ник или @username игрока:", reply_markup=InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="⬅️ Отмена", callback_data="my_club")]]))
     await state.set_state(Form.invite_player_target)
 
 @dp.message(Form.invite_player_target, F.text)
 async def process_invite_target(message: Message, state: FSMContext):
-    target_roblox = message.text.strip()
-    target = await get_user_by_roblox(target_roblox)
+    target_query = message.text.strip()
+    target = await find_user(target_query)
     
     if not target:
-        await message.answer(f"❌ Игрок <code>{target_roblox}</code> не найден в системе. Он должен сначала зарегистрироваться в боте.", parse_mode="HTML")
+        await message.answer(f"❌ Игрок <b>{target_query}</b> не найден в системе.", parse_mode="HTML")
         return
     
-    target_tg_id, _, target_club_id = target
+    target_tg_id, target_roblox, target_display, target_club_id = target
+    
     if target_club_id is not None:
         await message.answer("❌ Этот игрок уже состоит в другом клубе.")
         return
@@ -579,7 +713,7 @@ async def process_invite_target(message: Message, state: FSMContext):
     
     try:
         await bot.send_message(target_tg_id, f"📩 <b>Вам поступило предложение!</b>\n\nКлуб <b>{club_name}</b> приглашает вас в состав.\n\nПринять предложение?", parse_mode="HTML", reply_markup=invite_kb)
-        await message.answer(f"✅ Приглашение отправлено игроку <code>{target_roblox}</code>.", parse_mode="HTML")
+        await message.answer(f"✅ Приглашение отправлено игроку <b>{target_roblox}</b>.", parse_mode="HTML")
     except Exception:
         await message.answer("❌ Не удалось отправить сообщение игроку. Возможно, он заблокировал бота.")
         
@@ -612,34 +746,6 @@ async def cb_decline_invite(callback: CallbackQuery):
     except TelegramBadRequest: pass
     await callback.message.edit_text("❌ Вы отклонили приглашение клуба.")
 
-@dp.callback_query(F.data.startswith("approve_transfer_"), IsAdmin())
-async def cb_approve_transfer(callback: CallbackQuery):
-    try: await callback.answer()
-    except TelegramBadRequest: pass
-    app_id = int(callback.data.split("_")[2])
-    app_data = await get_application(app_id)
-    _, _, owner_tg_id, player_tg_id, _ = app_data
-    
-    owner_data = await get_user(int(owner_tg_id))
-    player_data = await get_user(int(player_tg_id))
-    
-    async with aiosqlite.connect(DB_PATH) as db:
-        async with db.execute("SELECT name FROM clubs WHERE id = ?", (owner_data[6],)) as cursor:
-            club_name = (await cursor.fetchone())[0]
-        await db.execute("UPDATE users SET club_id = ? WHERE telegram_id = ?", (owner_data[6], player_tg_id))
-        await db.commit()
-        
-    await update_app_status(app_id, "approved")
-    
-    post_text = f"🔄 ｜ <b>ТРАНСФЕР ЗАВЕРШЕН</b>\n\n👤 <b>Игрок:</b> <code>{player_data[1]}</code>\n🛡 <b>Новый клуб:</b> {club_name}"
-    try:
-        await bot.send_message(CHANNEL_ID, post_text, parse_mode="HTML")
-        await callback.message.edit_text("✅ Трансфер одобрен и опубликован.")
-        await bot.send_message(int(player_tg_id), f"✅ Ваш переход в клуб <b>{club_name}</b> одобрен!", parse_mode="HTML")
-        await bot.send_message(int(owner_tg_id), f"✅ Игрок <code>{player_data[1]}</code> успешно принят в ваш клуб!", parse_mode="HTML")
-    except Exception as e:
-        await callback.message.edit_text(f"⚠️ Ошибка: {e}")
-
 @dp.callback_query(F.data == "club_kick")
 async def cb_club_kick(callback: CallbackQuery):
     try: await callback.answer()
@@ -671,7 +777,6 @@ async def cb_kick_player(callback: CallbackQuery):
         await bot.send_message(target_tg_id, "❌ Вас исключили из клуба. Теперь вы снова Свободный агент.")
     except: pass
 
-# --- ПОИСК ТОВЫ ---
 @dp.callback_query(F.data == "club_friendly")
 async def cb_club_friendly(callback: CallbackQuery, state: FSMContext):
     try: await callback.answer()
@@ -733,37 +838,6 @@ async def cb_friendly_time(callback: CallbackQuery, state: FSMContext):
     await notify_admins(f"<b>Заявка на поиск товы (ID: {app_id})</b>\n\n{post_text}", reply_markup=admin_kb)
     await state.clear()
 
-@dp.callback_query(F.data.startswith("approve_friendly_"), IsAdmin())
-async def approve_friendly(callback: CallbackQuery):
-    try: await callback.answer()
-    except TelegramBadRequest: pass
-    app_id = int(callback.data.split("_")[2])
-    app_data = await get_application(app_id)
-    tg_id, _, fmt, time_str, club_and_username = app_data
-    
-    try:
-        club_name, username = club_and_username.split(" | ")
-    except ValueError:
-        club_name = club_and_username
-        username = "Не указана"
-    
-    post_text = (
-        f"⚔️ ｜ <b>ПОИСК ТОВАРИЩЕСКОГО МАТЧА</b>\n\n"
-        f"🛡 <b>Клуб:</b> {club_name}\n"
-        f"👥 <b>Формат:</b> {fmt}\n"
-        f"⏱ <b>Время:</b> {time_str}\n\n"
-        f"📬 <b>Связь:</b> {username}"
-    )
-    
-    try:
-        await bot.send_message(CHANNEL_ID, post_text, parse_mode="HTML")
-        await update_app_status(app_id, "approved")
-        await callback.message.edit_text(f"✅ Заявка на поиск товы #{app_id} одобрена и опубликована.")
-        await bot.send_message(tg_id, "✅ Ваше объявление о поиске товы одобрено и опубликовано в канале!")
-    except Exception as e:
-        await callback.message.edit_text(f"⚠️ Ошибка: {e}")
-
-# --- РАЗМЕСТИТЬ ОБЪЯВЛЕНИЕ ---
 @dp.callback_query(F.data == "advertise")
 async def cb_advertise(callback: CallbackQuery, state: FSMContext):
     try: await callback.answer()
@@ -812,25 +886,6 @@ async def process_ad_link(message: Message, state: FSMContext):
     await notify_admins(f"<b>Новое объявление (ID: {app_id})</b>\n\n{check_text}", reply_markup=admin_kb)
     await state.clear()
 
-@dp.callback_query(F.data.startswith("approve_ad_"), IsAdmin())
-async def approve_ad(callback: CallbackQuery):
-    try: await callback.answer()
-    except TelegramBadRequest: pass
-    app_id = int(callback.data.split("_")[2])
-    app_data = await get_application(app_id)
-    tg_id, _, ad_text, username, ad_link = app_data
-
-    post_text = f"{ad_text}\n\n🔗 <b>Ссылка:</b> {ad_link}\n👤 <b>Публиковал:</b> {username}"
-    
-    try:
-        await bot.send_message(CHANNEL_ID, post_text, parse_mode="HTML")
-        await update_app_status(app_id, "approved")
-        await callback.message.edit_text(f"✅ Объявление #{app_id} одобрено и опубликовано.")
-        await bot.send_message(tg_id, "✅ Ваше объявление одобрено и опубликовано в канале!")
-    except Exception as e:
-        await callback.message.edit_text(f"⚠️ Ошибка: {e}")
-
-# --- ПОИСК КЛУБА (СВОБОДНЫЙ АГЕНТ) ---
 @dp.callback_query(F.data == "search_club")
 async def cb_search_club(callback: CallbackQuery, state: FSMContext):
     try: await callback.answer()
@@ -875,7 +930,6 @@ async def process_contact(message: Message, state: FSMContext):
     await notify_admins(f"<b>Новая заявка (ID: {app_id})</b>\n\n{post_text}", reply_markup=admin_kb)
     await state.clear()
 
-# --- КАРЬЕРА ---
 @dp.callback_query(F.data == "career")
 async def cb_career(callback: CallbackQuery):
     try: await callback.answer()
@@ -934,7 +988,6 @@ async def process_career_finish(message: Message, state: FSMContext):
     await notify_admins(f"<b>Завершение карьеры</b>\nОт: {user_data[1]}\nПричина:\n{reason}", reply_markup=admin_kb)
     await state.clear()
 
-# --- ПОДАТЬ ЗАЯВЛЕНИЕ ---
 @dp.callback_query(F.data == "application")
 async def cb_application(callback: CallbackQuery):
     try: await callback.answer()
@@ -1013,7 +1066,6 @@ async def process_admin_exp(message: Message, state: FSMContext):
     await notify_admins(text, reply_markup=admin_kb)
     await state.clear()
 
-# --- МОИ ЗАЯВКИ ---
 @dp.callback_query(F.data == "my_apps")
 async def cb_my_apps(callback: CallbackQuery):
     try: await callback.answer()
@@ -1272,7 +1324,7 @@ async def admin_back(callback: CallbackQuery, state: FSMContext):
     ])
     await callback.message.edit_text("👑 <b>Админ-панель RGS</b>\n\nДобро пожаловать в панель управления. Выберите раздел:", parse_mode="HTML", reply_markup=kb)
 
-# --- МОДЕРАЦИЯ ЗАЯВОК ---
+# --- МОДЕРАЦИЯ ЗАЯВОК (С ОТВЕТОМ КТО СДЕЛАЛ) ---
 @dp.callback_query(F.data.startswith("approve_agent_"), IsAdmin())
 async def approve_agent(callback: CallbackQuery):
     try: await callback.answer()
@@ -1286,10 +1338,18 @@ async def approve_agent(callback: CallbackQuery):
     try:
         await bot.send_message(CHANNEL_ID, post_text, parse_mode="HTML")
         await update_app_status(app_id, "approved")
-        await callback.message.edit_text(f"✅ Заявка #{app_id} одобрена.")
+        
+        # Убираем кнопки
+        try: await callback.message.edit_reply_markup(reply_markup=None)
+        except TelegramBadRequest: pass
+        
+        admin_name = callback.from_user.full_name
+        await callback.message.reply(f"✅ Заявка #{app_id} одобрена администратором {admin_name}.")
+        
         await bot.send_message(tg_id, "✅ Ваше объявление (Свободный агент) одобрено!")
     except Exception as e:
-        await callback.message.edit_text(f"⚠️ Ошибка: {e}")
+        try: await callback.message.reply(f"⚠️ Ошибка: {e}")
+        except: pass
 
 @dp.callback_query(F.data.startswith("approve_club_"), IsAdmin())
 async def approve_club(callback: CallbackQuery):
@@ -1309,10 +1369,17 @@ async def approve_club(callback: CallbackQuery):
     try:
         await bot.send_photo(CHANNEL_ID, photo=file_id, caption=post_text, parse_mode="HTML")
         await update_app_status(app_id, "approved")
-        await callback.message.edit_caption(caption=f"✅ Заявка на клуб одобрена.")
+        
+        try: await callback.message.edit_reply_markup(reply_markup=None)
+        except TelegramBadRequest: pass
+        
+        admin_name = callback.from_user.full_name
+        await callback.message.reply(f"✅ Заявка на клуб #{app_id} одобрена администратором {admin_name}.")
+        
         await bot.send_message(tg_id, "✅ Ваше заявление на клуб одобрено! Вам доступен раздел 'Мой клуб'.")
     except Exception as e:
-        await callback.message.edit_caption(caption=f"⚠️ Ошибка: {e}")
+        try: await callback.message.reply(f"⚠️ Ошибка при публикации: {e}")
+        except: pass
 
 @dp.callback_query(F.data.startswith("approve_clubsearch_"), IsAdmin())
 async def approve_clubsearch(callback: CallbackQuery):
@@ -1335,10 +1402,17 @@ async def approve_clubsearch(callback: CallbackQuery):
     try:
         await bot.send_message(CHANNEL_ID, post_text, parse_mode="HTML")
         await update_app_status(app_id, "approved")
-        await callback.message.edit_text(f"✅ Заявка на поиск #{app_id} одобрена и опубликована.")
+        
+        try: await callback.message.edit_reply_markup(reply_markup=None)
+        except TelegramBadRequest: pass
+        
+        admin_name = callback.from_user.full_name
+        await callback.message.reply(f"✅ Заявка на поиск #{app_id} одобрена администратором {admin_name}.")
+        
         await bot.send_message(tg_id, "✅ Ваше объявление о поиске игроков одобрено и опубликовано в канале!")
     except Exception as e:
-        await callback.message.edit_text(f"⚠️ Ошибка: {e}")
+        try: await callback.message.reply(f"⚠️ Ошибка: {e}")
+        except: pass
 
 @dp.callback_query(F.data.startswith("approve_adminapp_"), IsAdmin())
 async def approve_adminapp(callback: CallbackQuery):
@@ -1348,7 +1422,13 @@ async def approve_adminapp(callback: CallbackQuery):
     app_data = await get_application(app_id)
     tg_id = app_data[0]
     await update_app_status(app_id, "approved")
-    await callback.message.edit_text(f"✅ Заявка в администрацию #{app_id} одобрена.")
+    
+    try: await callback.message.edit_reply_markup(reply_markup=None)
+    except TelegramBadRequest: pass
+    
+    admin_name = callback.from_user.full_name
+    await callback.message.reply(f"✅ Заявка в администрацию #{app_id} одобрена администратором {admin_name}.")
+    
     await bot.send_message(tg_id, "✅ Ваша заявка в администрацию одобрена! С вами свяжутся.")
 
 @dp.callback_query(F.data.startswith("approve_nick_"), IsAdmin())
@@ -1362,7 +1442,13 @@ async def approve_nick(callback: CallbackQuery):
         await db.execute("UPDATE users SET roblox_username = ?, roblox_id = ? WHERE telegram_id = ?", (new_nick, new_id, tg_id))
         await db.commit()
     await update_app_status(app_id, "approved")
-    await callback.message.edit_text(f"✅ Смена ника на {new_nick} одобрена.")
+    
+    try: await callback.message.edit_reply_markup(reply_markup=None)
+    except TelegramBadRequest: pass
+    
+    admin_name = callback.from_user.full_name
+    await callback.message.reply(f"✅ Смена ника на {new_nick} (#{app_id}) одобрена администратором {admin_name}.")
+    
     await bot.send_message(tg_id, f"✅ Ваш новый ник <code>{new_nick}</code> одобрен!", parse_mode="HTML")
 
 @dp.callback_query(F.data.startswith("approve_career_"), IsAdmin())
@@ -1379,10 +1465,114 @@ async def approve_career(callback: CallbackQuery):
     await update_app_status(app_id, "approved")
     try:
         await bot.send_message(CHANNEL_ID, post_text, parse_mode="HTML")
-        await callback.message.edit_text(f"✅ Завершение карьеры одобрено.")
+        
+        try: await callback.message.edit_reply_markup(reply_markup=None)
+        except TelegramBadRequest: pass
+        
+        admin_name = callback.from_user.full_name
+        await callback.message.reply(f"✅ Завершение карьеры #{app_id} одобрено администратором {admin_name}.")
+        
         await bot.send_message(tg_id, "✅ Ваша карьера официально завершена.")
     except Exception as e:
-        await callback.message.edit_text(f"⚠️ Ошибка: {e}")
+        try: await callback.message.reply(f"⚠️ Ошибка: {e}")
+        except: pass
+
+@dp.callback_query(F.data.startswith("approve_friendly_"), IsAdmin())
+async def approve_friendly(callback: CallbackQuery):
+    try: await callback.answer()
+    except TelegramBadRequest: pass
+    app_id = int(callback.data.split("_")[2])
+    app_data = await get_application(app_id)
+    tg_id, _, fmt, time_str, club_and_username = app_data
+    
+    try:
+        club_name, username = club_and_username.split(" | ")
+    except ValueError:
+        club_name = club_and_username
+        username = "Не указана"
+    
+    post_text = (
+        f"⚔️ ｜ <b>ПОИСК ТОВАРИЩЕСКОГО МАТЧА</b>\n\n"
+        f"🛡 <b>Клуб:</b> {club_name}\n"
+        f"👥 <b>Формат:</b> {fmt}\n"
+        f"⏱ <b>Время:</b> {time_str}\n\n"
+        f"📬 <b>Связь:</b> {username}"
+    )
+    
+    try:
+        await bot.send_message(CHANNEL_ID, post_text, parse_mode="HTML")
+        await update_app_status(app_id, "approved")
+        
+        try: await callback.message.edit_reply_markup(reply_markup=None)
+        except TelegramBadRequest: pass
+        
+        admin_name = callback.from_user.full_name
+        await callback.message.reply(f"✅ Заявка на поиск товы #{app_id} одобрена администратором {admin_name}.")
+        
+        await bot.send_message(tg_id, "✅ Ваше объявление о поиске товы одобрено и опубликовано в канале!")
+    except Exception as e:
+        try: await callback.message.reply(f"⚠️ Ошибка: {e}")
+        except: pass
+
+@dp.callback_query(F.data.startswith("approve_ad_"), IsAdmin())
+async def approve_ad(callback: CallbackQuery):
+    try: await callback.answer()
+    except TelegramBadRequest: pass
+    app_id = int(callback.data.split("_")[2])
+    app_data = await get_application(app_id)
+    tg_id, _, ad_text, username, ad_link = app_data
+
+    post_text = f"{ad_text}\n\n🔗 <b>Ссылка:</b> {ad_link}\n👤 <b>Публиковал:</b> {username}"
+    
+    try:
+        await bot.send_message(CHANNEL_ID, post_text, parse_mode="HTML")
+        await update_app_status(app_id, "approved")
+        
+        try: await callback.message.edit_reply_markup(reply_markup=None)
+        except TelegramBadRequest: pass
+        
+        admin_name = callback.from_user.full_name
+        await callback.message.reply(f"✅ Объявление #{app_id} одобрено администратором {admin_name}.")
+        
+        await bot.send_message(tg_id, "✅ Ваше объявление одобрено и опубликовано в канале!")
+    except Exception as e:
+        try: await callback.message.reply(f"⚠️ Ошибка: {e}")
+        except: pass
+
+@dp.callback_query(F.data.startswith("approve_transfer_"), IsAdmin())
+async def cb_approve_transfer(callback: CallbackQuery):
+    try: await callback.answer()
+    except TelegramBadRequest: pass
+    app_id = int(callback.data.split("_")[2])
+    app_data = await get_application(app_id)
+    _, _, owner_tg_id, player_tg_id, _ = app_data
+    
+    owner_data = await get_user(int(owner_tg_id))
+    player_data = await get_user(int(player_tg_id))
+    
+    async with aiosqlite.connect(DB_PATH) as db:
+        async with db.execute("SELECT name FROM clubs WHERE id = ?", (owner_data[6],)) as cursor:
+            club_name = (await cursor.fetchone())[0]
+        await db.execute("UPDATE users SET club_id = ? WHERE telegram_id = ?", (owner_data[6], player_tg_id))
+        await db.commit()
+        
+    await update_app_status(app_id, "approved")
+    
+    post_text = f"🔄 ｜ <b>ТРАНСФЕР ЗАВЕРШЕН</b>\n\n👤 <b>Игрок:</b> <code>{player_data[1]}</code>\n🛡 <b>Новый клуб:</b> {club_name}"
+    try:
+        await bot.send_message(CHANNEL_ID, post_text, parse_mode="HTML")
+        
+        try: await callback.message.edit_reply_markup(reply_markup=None)
+        except TelegramBadRequest: pass
+        
+        admin_name = callback.from_user.full_name
+        await callback.message.reply(f"✅ Трансфер #{app_id} одобрен администратором {admin_name}.")
+        
+        await bot.send_message(int(player_tg_id), f"✅ Ваш переход в клуб <b>{club_name}</b> одобрен!", parse_mode="HTML")
+        await bot.send_message(int(owner_tg_id), f"✅ Игрок <code>{player_data[1]}</code> успешно принят в ваш клуб!", parse_mode="HTML")
+    except Exception as e:
+        try: await callback.message.reply(f"⚠️ Ошибка: {e}")
+        except: pass
 
 @dp.callback_query(F.data.startswith("reject_"), IsAdmin())
 async def reject_app(callback: CallbackQuery):
@@ -1401,23 +1591,20 @@ async def reject_app(callback: CallbackQuery):
     
     await update_app_status(app_id, "rejected")
     
-    if app_type == "club_app":
-        try:
-            await callback.message.edit_caption(caption=f"❌ Заявка на клуб отклонена.")
-        except TelegramBadRequest:
-            await callback.message.edit_text(f"❌ Заявка на клуб отклонена.")
-    else:
-        try:
-            await callback.message.edit_text(f"❌ Заявка #{app_id} отклонена.")
-        except TelegramBadRequest:
-            pass
+    try: await callback.message.edit_reply_markup(reply_markup=None)
+    except TelegramBadRequest: pass
+    
+    admin_name = callback.from_user.full_name
+    try:
+        await callback.message.reply(f"❌ Заявка #{app_id} отклонена администратором {admin_name}.")
+    except TelegramBadRequest:
+        pass
         
     try:
         await bot.send_message(tg_id, "❌ К сожалению, ваша заявка была отклонена.")
     except Exception:
         pass
 
-# --- ИНФОРМАЦИЯ ---
 @dp.callback_query(F.data == "info")
 async def cb_info(callback: CallbackQuery):
     try: await callback.answer()
@@ -1446,7 +1633,6 @@ async def cb_info(callback: CallbackQuery):
     ])
     await callback.message.edit_text(info_text, parse_mode="HTML", reply_markup=kb, disable_web_page_preview=True)
 
-# --- ПОДДЕРЖКА (ТИКЕТЫ) ---
 @dp.callback_query(F.data == "support")
 async def cb_support(callback: CallbackQuery):
     try: await callback.answer()
@@ -1541,7 +1727,6 @@ async def cb_admin_cancel_reply(callback: CallbackQuery, state: FSMContext):
     await state.clear()
     await callback.message.edit_text("❌ Ответ отменен.")
 
-# --- ОБЩИЕ КНОПКИ ---
 @dp.callback_query(F.data == "open_menu")
 async def cb_open_menu(callback: CallbackQuery, state: FSMContext):
     try: await callback.answer()
