@@ -15,7 +15,7 @@ BOT_TOKEN = os.getenv("BOT_TOKEN")
 DB_PATH = "users.db"
 
 OWNER_ID = 2046978907
-CHANNEL_ID = "@proverkabota192" # <--- УКАЖИ ЗДЕСЬ ЮЗЕРНЕЙМ НОВОГО КАНАЛА
+CHANNEL_ID = "@TMRagdollSoccer" # <--- УКАЖИ ЗДЕСЬ ЮЗЕРНЕЙМ НОВОГО КАНАЛА
 
 # --- ИНИЦИАЛИЗАЦИЯ ---
 bot = Bot(token=BOT_TOKEN)
