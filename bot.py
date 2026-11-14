@@ -12,7 +12,7 @@ BOT_TOKEN = "8846789160:AAFkbP2SUZz0R5NiTdusKgEThHHNPjZqf_Q"
 DB_PATH = "users.db"
 
 OWNER_ID = 2046978907
-CHANNEL_ID = "@proverkabota192"
+CHANNEL_ID = "@TMRagdollSoccer"
 
 # --- ИНИЦИАЛИЗАЦИЯ ---
 bot = Bot(token=BOT_TOKEN)
