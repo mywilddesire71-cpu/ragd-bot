@@ -16,6 +16,7 @@ DB_PATH = "users.db"
 
 OWNER_ID = 2046978907
 CHANNEL_ID = "@TMRagdollSoccer"
+ADMIN_CHAT_ID = -1004376666585  # <--- ID ГРУППЫ ДЛЯ ЗАЯВОК
 
 # --- ИНИЦИАЛИЗАЦИЯ ---
 bot = Bot(token=BOT_TOKEN)
@@ -165,6 +166,16 @@ async def get_all_admins() -> list:
     return admins
 
 async def notify_admins(text: str, reply_markup=None, photo=None):
+    # 1. Отправляем в общий чат
+    try:
+        if photo:
+            await bot.send_photo(ADMIN_CHAT_ID, photo=photo, caption=text, parse_mode="HTML", reply_markup=reply_markup)
+        else:
+            await bot.send_message(ADMIN_CHAT_ID, text, parse_mode="HTML", reply_markup=reply_markup)
+    except Exception as e:
+        print(f"❌ [ОШИБКА] Не удалось отправить сообщение в общий чат {ADMIN_CHAT_ID}: {e}")
+
+    # 2. Отправляем в личку каждому админу
     admins = await get_all_admins()
     for admin_id in admins:
         try:
@@ -173,7 +184,11 @@ async def notify_admins(text: str, reply_markup=None, photo=None):
             else:
                 await bot.send_message(admin_id, text, parse_mode="HTML", reply_markup=reply_markup)
         except Exception:
-            pass
+            if photo:
+                try:
+                    await bot.send_message(admin_id, text + "\n\n<i>(Картинка не прикрепилась)</i>", parse_mode="HTML", reply_markup=reply_markup)
+                except Exception:
+                    pass
 
 # --- ПРОВЕРКА ЛИМИТОВ ---
 async def check_limit(telegram_id: int, app_type: str, daily_limit: int, cooldown_hours: float) -> tuple[bool, str]:
