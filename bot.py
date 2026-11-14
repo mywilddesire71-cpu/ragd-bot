@@ -41,6 +41,19 @@ APP_TYPES = {
     "ad": "Объявление / Реклама"
 }
 
+# --- БЕЗОПАСНОЕ РЕДАКТИРОВАНИЕ ---
+async def safe_edit_text(message: Message, text: str, reply_markup=None, parse_mode="HTML"):
+    try:
+        await message.edit_text(text, reply_markup=reply_markup, parse_mode=parse_mode)
+    except TelegramBadRequest:
+        pass
+
+async def safe_edit_caption(message: Message, caption: str, reply_markup=None, parse_mode="HTML"):
+    try:
+        await message.edit_caption(caption=caption, reply_markup=reply_markup, parse_mode=parse_mode)
+    except TelegramBadRequest:
+        pass
+
 # --- ФИЛЬТР ДЛЯ ПРОВЕРКИ ПРАВ АДМИНА ---
 class IsAdmin(BaseFilter):
     async def __call__(self, event: Message | CallbackQuery) -> bool:
@@ -525,13 +538,13 @@ async def cb_profile(callback: CallbackQuery):
         [InlineKeyboardButton(text="✏️ Сменить ник", callback_data="change_nick"), InlineKeyboardButton(text="🔄 Сменить позицию", callback_data="change_pos")],
         [InlineKeyboardButton(text="⬅️ Назад", callback_data="open_menu")]
     ])
-    await callback.message.edit_text(profile_text, parse_mode="HTML", reply_markup=keyboard)
+    await safe_edit_text(callback.message, profile_text, reply_markup=keyboard)
 
 @dp.callback_query(F.data == "change_nick")
 async def cb_change_nick(callback: CallbackQuery, state: FSMContext):
     try: await callback.answer()
     except TelegramBadRequest: pass
-    await callback.message.edit_text("Введите ваш новый Roblox username.\nОн будет отправлен на проверку администрации.", reply_markup=InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="⬅️ Отмена", callback_data="open_menu")]]))
+    await safe_edit_text(callback.message, "Введите ваш новый Roblox username.\nОн будет отправлен на проверку администрации.", reply_markup=InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="⬅️ Отмена", callback_data="open_menu")]]))
     await state.set_state(Form.changing_nick)
 
 @dp.message(Form.changing_nick, F.text)
@@ -567,7 +580,7 @@ async def cb_change_pos(callback: CallbackQuery):
         [InlineKeyboardButton(text="🎯 Полузащитник", callback_data="setpos_Полузащитник"), InlineKeyboardButton(text="⚡ Нападающий", callback_data="setpos_Нападающий")],
         [InlineKeyboardButton(text="⬅️ Назад", callback_data="profile")]
     ])
-    await callback.message.edit_text("Выберите новую позицию:", reply_markup=pos_kb)
+    await safe_edit_text(callback.message, "Выберите новую позицию:", reply_markup=pos_kb)
 
 @dp.callback_query(F.data == "my_club")
 async def cb_my_club(callback: CallbackQuery):
@@ -580,7 +593,7 @@ async def cb_my_club(callback: CallbackQuery):
     if not club_id:
         text = "🛡 <b>Мой клуб</b>\n\nВы пока не состоите в клубе. Вы <b>Свободный агент</b>.\nПодайте заявление на создание клуба или ждите приглашения."
         kb = InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="⬅️ Назад", callback_data="open_menu")]])
-        await callback.message.edit_text(text, parse_mode="HTML", reply_markup=kb)
+        await safe_edit_text(callback.message, text, reply_markup=kb)
         return
 
     async with aiosqlite.connect(DB_PATH) as db:
@@ -602,7 +615,7 @@ async def cb_my_club(callback: CallbackQuery):
             [InlineKeyboardButton(text="⬅️ Назад", callback_data="open_menu")]
         ])
     
-    await callback.message.edit_text(text, parse_mode="HTML", reply_markup=kb)
+    await safe_edit_text(callback.message, text, reply_markup=kb)
 
 @dp.callback_query(F.data == "club_roster")
 async def cb_club_roster(callback: CallbackQuery):
@@ -623,7 +636,7 @@ async def cb_club_roster(callback: CallbackQuery):
         text += f"• <code>{p[0]}</code> — {emoji} {p[1]} {role}\n"
         
     kb = InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="⬅️ Назад", callback_data="my_club")]])
-    await callback.message.edit_text(text, parse_mode="HTML", reply_markup=kb)
+    await safe_edit_text(callback.message, text, reply_markup=kb)
 
 @dp.callback_query(F.data == "club_search_players")
 async def cb_club_search_players(callback: CallbackQuery, state: FSMContext):
@@ -636,9 +649,9 @@ async def cb_club_search_players(callback: CallbackQuery, state: FSMContext):
         except TelegramBadRequest: pass
         return
 
-    await callback.message.edit_text(
+    await safe_edit_text(
+        callback.message,
         "🔍 <b>Поиск игроков</b>\n\nШаг 1 из 2. Напишите, какие позиции вам нужны (например: Нападающий, Защитник):", 
-        parse_mode="HTML", 
         reply_markup=InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="⬅️ Отмена", callback_data="my_club")]])
     )
     await state.set_state(Form.club_search_positions)
@@ -684,7 +697,7 @@ async def process_club_search_reqs(message: Message, state: FSMContext):
 async def cb_club_invite(callback: CallbackQuery, state: FSMContext):
     try: await callback.answer()
     except TelegramBadRequest: pass
-    await callback.message.edit_text("📩 <b>Приглашение игрока</b>\n\nВведите Roblox ник или @username игрока:", reply_markup=InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="⬅️ Отмена", callback_data="my_club")]]))
+    await safe_edit_text(callback.message, "📩 <b>Приглашение игрока</b>\n\nВведите Roblox ник или @username игрока:", reply_markup=InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="⬅️ Отмена", callback_data="my_club")]]))
     await state.set_state(Form.invite_player_target)
 
 @dp.message(Form.invite_player_target, F.text)
@@ -738,13 +751,13 @@ async def cb_accept_invite(callback: CallbackQuery):
             club_name = (await cursor.fetchone())[0]
 
     await notify_admins(f"🔄 <b>Запрос на трансфер</b>\n\n👤 Игрок: <code>{player_data[1]}</code>\n🛡 Клуб: {club_name}\n\nОдобрить переход?", reply_markup=admin_kb)
-    await callback.message.edit_text("⏳ Вы приняли приглашение. Ожидайте подтверждения от администрации.")
+    await safe_edit_text(callback.message, "⏳ Вы приняли приглашение. Ожидайте подтверждения от администрации.")
 
 @dp.callback_query(F.data.startswith("decline_inv_"))
 async def cb_decline_invite(callback: CallbackQuery):
     try: await callback.answer()
     except TelegramBadRequest: pass
-    await callback.message.edit_text("❌ Вы отклонили приглашение клуба.")
+    await safe_edit_text(callback.message, "❌ Вы отклонили приглашение клуба.")
 
 @dp.callback_query(F.data == "club_kick")
 async def cb_club_kick(callback: CallbackQuery):
@@ -756,7 +769,7 @@ async def cb_club_kick(callback: CallbackQuery):
             players = await cursor.fetchall()
 
     if not players:
-        await callback.message.edit_text("В вашем клубе нет игроков.", reply_markup=InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="⬅️ Назад", callback_data="my_club")]]))
+        await safe_edit_text(callback.message, "В вашем клубе нет игроков.", reply_markup=InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="⬅️ Назад", callback_data="my_club")]]))
         return
 
     kb = []
@@ -764,7 +777,7 @@ async def cb_club_kick(callback: CallbackQuery):
         kb.append([InlineKeyboardButton(text=f"❌ {p[1]}", callback_data=f"kick_{p[0]}")])
     kb.append([InlineKeyboardButton(text="⬅️ Назад", callback_data="my_club")])
     
-    await callback.message.edit_text("🗑 Выберите игрока для исключения:", reply_markup=InlineKeyboardMarkup(inline_keyboard=kb))
+    await safe_edit_text(callback.message, "🗑 Выберите игрока для исключения:", reply_markup=InlineKeyboardMarkup(inline_keyboard=kb))
 
 @dp.callback_query(F.data.startswith("kick_"))
 async def cb_kick_player(callback: CallbackQuery):
@@ -772,7 +785,7 @@ async def cb_kick_player(callback: CallbackQuery):
     except TelegramBadRequest: pass
     target_tg_id = int(callback.data.split("_")[1])
     await update_user_field(target_tg_id, "club_id", None)
-    await callback.message.edit_text("✅ Игрок исключен из клуба.")
+    await safe_edit_text(callback.message, "✅ Игрок исключен из клуба.")
     try:
         await bot.send_message(target_tg_id, "❌ Вас исключили из клуба. Теперь вы снова Свободный агент.")
     except: pass
@@ -785,7 +798,7 @@ async def cb_club_friendly(callback: CallbackQuery, state: FSMContext):
         [InlineKeyboardButton(text="3x3", callback_data="friendly_fmt_3x3"), InlineKeyboardButton(text="4x4", callback_data="friendly_fmt_4x4")],
         [InlineKeyboardButton(text="⬅️ Отмена", callback_data="my_club")]
     ])
-    await callback.message.edit_text("⚔️ <b>Поиск товы</b>\n\nШаг 1 из 2. Выберите формат матча:", parse_mode="HTML", reply_markup=kb)
+    await safe_edit_text(callback.message, "⚔️ <b>Поиск товы</b>\n\nШаг 1 из 2. Выберите формат матча:", reply_markup=kb)
     await state.set_state(Form.friendly_format)
 
 @dp.callback_query(F.data.startswith("friendly_fmt_"), Form.friendly_format)
@@ -800,7 +813,7 @@ async def cb_friendly_format(callback: CallbackQuery, state: FSMContext):
         [InlineKeyboardButton(text="В ближайшее время", callback_data="friendly_time_В ближайшее время")],
         [InlineKeyboardButton(text="⬅️ Отмена", callback_data="my_club")]
     ])
-    await callback.message.edit_text("⚔️ <b>Поиск товы</b>\n\nШаг 2 из 2. Выберите время:", parse_mode="HTML", reply_markup=kb)
+    await safe_edit_text(callback.message, "⚔️ <b>Поиск товы</b>\n\nШаг 2 из 2. Выберите время:", reply_markup=kb)
     await state.set_state(Form.friendly_time)
 
 @dp.callback_query(F.data.startswith("friendly_time_"), Form.friendly_time)
@@ -834,7 +847,7 @@ async def cb_friendly_time(callback: CallbackQuery, state: FSMContext):
         f"📬 <b>Связь:</b> {username}"
     )
     
-    await callback.message.edit_text("⏳ Заявка на поиск товы отправлена на проверку администрации.")
+    await safe_edit_text(callback.message, "⏳ Заявка на поиск товы отправлена на проверку администрации.")
     await notify_admins(f"<b>Заявка на поиск товы (ID: {app_id})</b>\n\n{post_text}", reply_markup=admin_kb)
     await state.clear()
 
@@ -849,10 +862,10 @@ async def cb_advertise(callback: CallbackQuery, state: FSMContext):
         except TelegramBadRequest: pass
         return
 
-    await callback.message.edit_text(
+    await safe_edit_text(
+        callback.message,
         "📢 <b>Размещение объявления</b>\n\n"
         "Шаг 1 из 2. Напишите текст, который хотите опубликовать в канале (реклама канала, новостника и т.д.):",
-        parse_mode="HTML",
         reply_markup=InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="⬅️ Отмена", callback_data="open_menu")]])
     )
     await state.set_state(Form.entering_ad_text)
@@ -901,7 +914,7 @@ async def cb_search_club(callback: CallbackQuery, state: FSMContext):
         except TelegramBadRequest: pass
         return
 
-    await callback.message.edit_text("🛡 <b>Создание объявления: Свободный агент</b>\n\nНапишите ваши <b>требования</b>:", parse_mode="HTML", reply_markup=InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="⬅️ Отмена", callback_data="open_menu")]]))
+    await safe_edit_text(callback.message, "🛡 <b>Создание объявления: Свободный агент</b>\n\nНапишите ваши <b>требования</b>:", reply_markup=InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="⬅️ Отмена", callback_data="open_menu")]]))
     await state.set_state(Form.entering_requirements)
 
 @dp.message(Form.entering_requirements, F.text)
@@ -949,7 +962,7 @@ async def cb_career(callback: CallbackQuery):
         text = "🏃‍♂️ <b>Управление карьерой</b>\n\nВаша карьера <b>завершена</b>."
         buttons.append([InlineKeyboardButton(text="▶️ Вернуть карьеру", callback_data="career_resume")])
     buttons.append([InlineKeyboardButton(text="⬅️ Назад в меню", callback_data="open_menu")])
-    await callback.message.edit_text(text, parse_mode="HTML", reply_markup=InlineKeyboardMarkup(inline_keyboard=buttons))
+    await safe_edit_text(callback.message, text, reply_markup=InlineKeyboardMarkup(inline_keyboard=buttons))
 
 @dp.callback_query(F.data == "career_pause")
 async def cb_career_pause(callback: CallbackQuery):
@@ -973,7 +986,7 @@ async def cb_career_resume(callback: CallbackQuery):
 async def cb_career_finish(callback: CallbackQuery, state: FSMContext):
     try: await callback.answer()
     except TelegramBadRequest: pass
-    await callback.message.edit_text("🏁 <b>Завершение карьеры</b>\n\nНапишите причину завершения карьеры:", reply_markup=InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="⬅️ Отмена", callback_data="career")]]))
+    await safe_edit_text(callback.message, "🏁 <b>Завершение карьеры</b>\n\nНапишите причину завершения карьеры:", reply_markup=InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="⬅️ Отмена", callback_data="career")]]))
     await state.set_state(Form.career_finish_reason)
 
 @dp.message(Form.career_finish_reason, F.text)
@@ -997,13 +1010,13 @@ async def cb_application(callback: CallbackQuery):
         [InlineKeyboardButton(text="👑 Заявление в администрацию", callback_data="app_admin")],
         [InlineKeyboardButton(text="⬅️ Назад", callback_data="open_menu")]
     ])
-    await callback.message.edit_text("📝 <b>Подать заявление</b>\n\nВыберите тип заявления:", parse_mode="HTML", reply_markup=kb)
+    await safe_edit_text(callback.message, "📝 <b>Подать заявление</b>\n\nВыберите тип заявления:", reply_markup=kb)
 
 @dp.callback_query(F.data == "app_club")
 async def cb_app_club(callback: CallbackQuery, state: FSMContext):
     try: await callback.answer()
     except TelegramBadRequest: pass
-    await callback.message.edit_text("🛡 <b>Заявление на клуб</b>\n\nШаг 1 из 2. Введите название вашего клуба:", reply_markup=InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="⬅️ Отмена", callback_data="application")]]))
+    await safe_edit_text(callback.message, "🛡 <b>Заявление на клуб</b>\n\nШаг 1 из 2. Введите название вашего клуба:", reply_markup=InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="⬅️ Отмена", callback_data="application")]]))
     await state.set_state(Form.club_app_name)
 
 @dp.message(Form.club_app_name, F.text)
@@ -1036,10 +1049,10 @@ async def cb_app_admin(callback: CallbackQuery, state: FSMContext):
     except TelegramBadRequest: pass
     is_open = await get_setting('admin_apps_open')
     if is_open != 'True':
-        await callback.message.edit_text("❌ На данный момент набор в администрацию <b>закрыт</b>.", parse_mode="HTML", reply_markup=InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="⬅️ Назад", callback_data="application")]]))
+        await safe_edit_text(callback.message, "❌ На данный момент набор в администрацию <b>закрыт</b>.", reply_markup=InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="⬅️ Назад", callback_data="application")]]))
         return
         
-    await callback.message.edit_text("👑 <b>Заявление в администрацию</b>\n\nШаг 1 из 2. На какую <b>должность</b> вы претендуете?:", parse_mode="HTML", reply_markup=InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="⬅️ Отмена", callback_data="application")]]))
+    await safe_edit_text(callback.message, "👑 <b>Заявление в администрацию</b>\n\nШаг 1 из 2. На какую <b>должность</b> вы претендуете?:", reply_markup=InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="⬅️ Отмена", callback_data="application")]]))
     await state.set_state(Form.admin_app_position)
 
 @dp.message(Form.admin_app_position, F.text)
@@ -1085,7 +1098,7 @@ async def cb_my_apps(callback: CallbackQuery):
             elif app_type == "ad": text += f"   Текст: {text1[:20]}...\n"
             text += f"   Статус: {status_icon}\n\n"
     keyboard = InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="⬅️ Назад в меню", callback_data="open_menu")]])
-    await callback.message.edit_text(text, parse_mode="HTML", reply_markup=keyboard)
+    await safe_edit_text(callback.message, text, reply_markup=keyboard)
 
 # ================= АДМИН ПАНЕЛЬ =================
 
@@ -1105,7 +1118,7 @@ async def show_admin_manage_admins(target):
     markup = InlineKeyboardMarkup(inline_keyboard=kb)
     
     if isinstance(target, CallbackQuery):
-        await target.message.edit_text(text, parse_mode="HTML", reply_markup=markup)
+        await safe_edit_text(target.message, text, reply_markup=markup)
     else:
         await target.answer(text, parse_mode="HTML", reply_markup=markup)
 
@@ -1132,7 +1145,7 @@ async def show_admin_club_info(target, club_id):
     ])
     
     if isinstance(target, CallbackQuery):
-        await target.message.edit_text(text, parse_mode="HTML", reply_markup=kb)
+        await safe_edit_text(target.message, text, reply_markup=kb)
     else:
         await target.answer(text, parse_mode="HTML", reply_markup=kb)
 
@@ -1166,7 +1179,7 @@ async def admin_stats(callback: CallbackQuery):
         f"🎫 Открытых тикетов: <code>{tickets_open}</code>"
     )
     kb = InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="⬅️ Назад", callback_data="admin_back")]])
-    await callback.message.edit_text(text, parse_mode="HTML", reply_markup=kb)
+    await safe_edit_text(callback.message, text, reply_markup=kb)
 
 @dp.callback_query(F.data == "admin_settings", IsAdmin())
 async def admin_settings(callback: CallbackQuery):
@@ -1181,7 +1194,7 @@ async def admin_settings(callback: CallbackQuery):
         [InlineKeyboardButton(text=f"⚙️ {btn_text}", callback_data="toggle_admin_apps")],
         [InlineKeyboardButton(text="⬅️ Назад", callback_data="admin_back")]
     ])
-    await callback.message.edit_text("⚙️ <b>Настройки бота</b>", parse_mode="HTML", reply_markup=kb)
+    await safe_edit_text(callback.message, "⚙️ <b>Настройки бота</b>", reply_markup=kb)
 
 @dp.callback_query(F.data == "toggle_admin_apps", IsAdmin())
 async def cb_toggle_admin(callback: CallbackQuery):
@@ -1202,10 +1215,10 @@ async def admin_manage_admins(callback: CallbackQuery):
 async def admin_add(callback: CallbackQuery, state: FSMContext):
     try: await callback.answer()
     except TelegramBadRequest: pass
-    await callback.message.edit_text(
+    await safe_edit_text(
+        callback.message,
         "Отправьте <b>Telegram ID</b> пользователя, которого хотите назначить админом.\n\n"
         "<i>(Узнать ID можно у бота @userinfobot)</i>", 
-        parse_mode="HTML",
         reply_markup=InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="⬅️ Отмена", callback_data="admin_manage_admins")]])
     )
     await state.set_state(Form.entering_new_admin_id)
@@ -1265,7 +1278,7 @@ async def admin_manage_clubs(callback: CallbackQuery):
         kb_list.append([InlineKeyboardButton(text="⬅️ Назад", callback_data="admin_back")])
         kb = InlineKeyboardMarkup(inline_keyboard=kb_list)
         
-    await callback.message.edit_text(text, parse_mode="HTML", reply_markup=kb)
+    await safe_edit_text(callback.message, text, reply_markup=kb)
 
 @dp.callback_query(F.data.startswith("admin_club_"), IsAdmin())
 async def admin_club_info(callback: CallbackQuery):
@@ -1281,7 +1294,7 @@ async def admin_rename_club(callback: CallbackQuery, state: FSMContext):
     club_id = int(callback.data.split("_")[2])
     await state.update_data(rename_club_id=club_id)
     
-    await callback.message.edit_text("Напишите новое название для этого клуба:", reply_markup=InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="⬅️ Отмена", callback_data=f"admin_club_{club_id}")]]))
+    await safe_edit_text(callback.message, "Напишите новое название для этого клуба:", reply_markup=InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="⬅️ Отмена", callback_data=f"admin_club_{club_id}")]]))
     await state.set_state(Form.entering_rename_club)
 
 @dp.message(Form.entering_rename_club, IsAdmin())
@@ -1309,7 +1322,7 @@ async def admin_delclub(callback: CallbackQuery):
         await db.execute("DELETE FROM clubs WHERE id = ?", (club_id,))
         await db.commit()
         
-    await callback.message.edit_text("✅ Клуб успешно удален. Все игроки стали свободными агентами.", reply_markup=InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="⬅️ Назад", callback_data="admin_manage_clubs")]]))
+    await safe_edit_text(callback.message, "✅ Клуб успешно удален. Все игроки стали свободными агентами.", reply_markup=InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="⬅️ Назад", callback_data="admin_manage_clubs")]]))
 
 @dp.callback_query(F.data == "admin_back", IsAdmin())
 async def admin_back(callback: CallbackQuery, state: FSMContext):
@@ -1322,7 +1335,7 @@ async def admin_back(callback: CallbackQuery, state: FSMContext):
         [InlineKeyboardButton(text="🛡 Управление клубами", callback_data="admin_manage_clubs")],
         [InlineKeyboardButton(text="⚙️ Настройки", callback_data="admin_settings")]
     ])
-    await callback.message.edit_text("👑 <b>Админ-панель RGS</b>\n\nДобро пожаловать в панель управления. Выберите раздел:", parse_mode="HTML", reply_markup=kb)
+    await safe_edit_text(callback.message, "👑 <b>Админ-панель RGS</b>\n\nДобро пожаловать в панель управления. Выберите раздел:", reply_markup=kb)
 
 # --- МОДЕРАЦИЯ ЗАЯВОК (С ОТВЕТОМ КТО СДЕЛАЛ) ---
 @dp.callback_query(F.data.startswith("approve_agent_"), IsAdmin())
@@ -1339,7 +1352,6 @@ async def approve_agent(callback: CallbackQuery):
         await bot.send_message(CHANNEL_ID, post_text, parse_mode="HTML")
         await update_app_status(app_id, "approved")
         
-        # Убираем кнопки
         try: await callback.message.edit_reply_markup(reply_markup=None)
         except TelegramBadRequest: pass
         
@@ -1631,7 +1643,7 @@ async def cb_info(callback: CallbackQuery):
         [InlineKeyboardButton(text="📢 Перейти в канал", url="https://t.me/TMRagdollSoccer")],
         [InlineKeyboardButton(text="⬅️ Назад в меню", callback_data="open_menu")]
     ])
-    await callback.message.edit_text(info_text, parse_mode="HTML", reply_markup=kb, disable_web_page_preview=True)
+    await safe_edit_text(callback.message, info_text, reply_markup=kb)
 
 @dp.callback_query(F.data == "support")
 async def cb_support(callback: CallbackQuery):
@@ -1647,15 +1659,15 @@ async def cb_support(callback: CallbackQuery):
         [InlineKeyboardButton(text="✍️ Написать в поддержку", callback_data="create_ticket")],
         [InlineKeyboardButton(text="⬅️ Назад в меню", callback_data="open_menu")]
     ])
-    await callback.message.edit_text(support_text, parse_mode="HTML", reply_markup=kb)
+    await safe_edit_text(callback.message, support_text, reply_markup=kb)
 
 @dp.callback_query(F.data == "create_ticket")
 async def cb_create_ticket(callback: CallbackQuery, state: FSMContext):
     try: await callback.answer()
     except TelegramBadRequest: pass
-    await callback.message.edit_text(
+    await safe_edit_text(
+        callback.message,
         "✍️ <b>Напишите ваш вопрос или описание проблемы</b> одним сообщением.\nМы передадим его администрации.",
-        parse_mode="HTML",
         reply_markup=InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="⬅️ Отмена", callback_data="support")]])
     )
     await state.set_state(Form.entering_ticket_text)
@@ -1689,7 +1701,7 @@ async def cb_admin_reply_ticket(callback: CallbackQuery, state: FSMContext):
     ticket_id = int(callback.data.split("_")[2])
     
     await state.update_data(ticket_id=ticket_id)
-    await callback.message.edit_text(f"✍️ <b>Ответ на тикет #{ticket_id}</b>\n\nНапишите текст ответа для пользователя:", reply_markup=InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="⬅️ Отмена", callback_data="admin_cancel_reply")]]))
+    await safe_edit_text(callback.message, f"✍️ <b>Ответ на тикет #{ticket_id}</b>\n\nНапишите текст ответа для пользователя:", reply_markup=InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="⬅️ Отмена", callback_data="admin_cancel_reply")]]))
     await state.set_state(Form.entering_ticket_reply)
 
 @dp.message(Form.entering_ticket_reply, IsAdmin())
@@ -1725,7 +1737,7 @@ async def cb_admin_cancel_reply(callback: CallbackQuery, state: FSMContext):
     try: await callback.answer()
     except TelegramBadRequest: pass
     await state.clear()
-    await callback.message.edit_text("❌ Ответ отменен.")
+    await safe_edit_text(callback.message, "❌ Ответ отменен.")
 
 @dp.callback_query(F.data == "open_menu")
 async def cb_open_menu(callback: CallbackQuery, state: FSMContext):
