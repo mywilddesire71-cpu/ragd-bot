@@ -523,7 +523,8 @@ async def cb_manage_club(callback: CallbackQuery):
     # Получаем тип контракта (Основа/Резерв)
     async with aiosqlite.connect(DB_PATH) as db:
         async with db.execute("SELECT squad_type FROM contracts WHERE telegram_id = ? AND club_id = ?", (tg_id, club_id)) as cursor:
-            squad_type = (await cursor.fetchone())[0]
+            squad_type_row = await cursor.fetchone()
+            squad_type = squad_type_row[0] if squad_type_row else "Неизвестно"
 
     if is_owner:
         text = f"🛡 <b>Управление клубом: {club_name}</b>\n\nВы владелец этого клуба.\nВаш статус в клубе: <b>{squad_type}</b>\nВыберите действие:"
@@ -615,4 +616,1167 @@ async def process_club_search_pos(message: Message, state: FSMContext):
     await state.set_state(Form.club_search_requirements)
 
 @dp.message(Form.club_search_requirements, F.text)
-async def process_club_search_reqs(message:
+async def process_club_search_reqs(message: Message, state: FSMContext):
+    data = await state.get_data()
+    needed_pos = data.get('needed_pos')
+    club_id = data.get('active_club_id')
+    reqs = message.text
+    
+    async with aiosqlite.connect(DB_PATH) as db:
+        async with db.execute("SELECT name FROM clubs WHERE id = ?", (club_id,)) as cursor:
+            club_name = (await cursor.fetchone())[0]
+
+    user_data = await get_user(message.from_user.id)
+    app_id = await create_application(message.from_user.id, "club_search", needed_pos, reqs, club_name)
+    
+    admin_text = (
+        f"🔍 <b>Заявка на поиск игроков</b>\n\n"
+        f"🛡 <b>Клуб:</b> {club_name}\n"
+        f"👤 <b>Владелец:</b> <code>{user_data[1]}</code>\n"
+        f"🎯 <b>Нужные позиции:</b> {needed_pos}\n"
+        f"📋 <b>Требования:</b>\n<i>{reqs}</i>"
+    )
+    
+    admin_kb = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="✅ Одобрить", callback_data=f"approve_clubsearch_{app_id}", style=ButtonStyle.SUCCESS), InlineKeyboardButton(text="❌ Отклонить", callback_data=f"reject_{app_id}", style=ButtonStyle.DANGER)]
+    ])
+    
+    await message.answer("⏳ Заявка на поиск игроков отправлена на проверку администрации.")
+    await notify_admins(admin_text, reply_markup=admin_kb)
+    await state.clear()
+
+@dp.callback_query(F.data.startswith("club_invite_"))
+async def cb_club_invite(callback: CallbackQuery, state: FSMContext):
+    try: await callback.answer()
+    except TelegramBadRequest: pass
+    club_id = int(callback.data.split("_")[2])
+    await state.update_data(active_club_id=club_id)
+    await safe_edit_text(callback.message, "📩 <b>Приглашение игрока</b>\n\nВведите Roblox ник или @username игрока:", reply_markup=InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="⬅️ Отмена", callback_data=f"manage_club_{club_id}", style=ButtonStyle.DANGER)]]))
+    await state.set_state(Form.invite_player_target)
+
+@dp.message(Form.invite_player_target, F.text)
+async def process_invite_target(message: Message, state: FSMContext):
+    data = await state.get_data()
+    club_id = data.get('active_club_id')
+    
+    target_query = message.text.strip()
+    target = await find_user(target_query)
+    
+    if not target:
+        await message.answer(f"❌ Игрок <b>{target_query}</b> не найден в системе.", parse_mode="HTML")
+        return
+    
+    target_tg_id, target_roblox, target_display = target
+    
+    # Проверяем, есть ли уже контракт с этим клубом
+    async with aiosqlite.connect(DB_PATH) as db:
+        async with db.execute("SELECT squad_type FROM contracts WHERE telegram_id = ? AND club_id = ?", (target_tg_id, club_id)) as cursor:
+            existing_contract = await cursor.fetchone()
+            if existing_contract:
+                await message.answer(f"❌ Этот игрок уже имеет контракт с вашим клубом ({existing_contract[0]}).")
+                return
+
+    async with aiosqlite.connect(DB_PATH) as db:
+        async with db.execute("SELECT name FROM clubs WHERE id = ?", (club_id,)) as cursor:
+            club_name = (await cursor.fetchone())[0]
+
+    # Выбор: Основа или Резерв
+    invite_kb = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="🟢 В Основу", callback_data=f"inv_type_Основа_{message.from_user.id}_{target_tg_id}_{club_id}", style=ButtonStyle.SUCCESS), 
+         InlineKeyboardButton(text="🟡 В Резерв", callback_data=f"inv_type_Резерв_{message.from_user.id}_{target_tg_id}_{club_id}", style=ButtonStyle.PRIMARY)],
+        [InlineKeyboardButton(text="❌ Отмена", callback_data=f"manage_club_{club_id}", style=ButtonStyle.DANGER)]
+    ])
+    
+    await safe_edit_text(message, f"📩 <b>Приглашение игрока {target_roblox}</b>\n\nВ какой состав вы хотите его добавить?", reply_markup=invite_kb)
+    await state.clear()
+
+@dp.callback_query(F.data.startswith("inv_type_"))
+async def cb_invite_type(callback: CallbackQuery):
+    try: await callback.answer()
+    except TelegramBadRequest: pass
+    
+    parts = callback.data.split("_")
+    squad_type = parts[2]
+    owner_tg_id = int(parts[3])
+    target_tg_id = int(parts[4])
+    club_id = int(parts[5])
+    
+    target_data = await get_user(target_tg_id)
+    
+    async with aiosqlite.connect(DB_PATH) as db:
+        async with db.execute("SELECT name FROM clubs WHERE id = ?", (club_id,)) as cursor:
+            club_name = (await cursor.fetchone())[0]
+
+    # Отправляем приглашение игроку
+    invite_kb = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="✅ Принять", callback_data=f"accept_inv_{owner_tg_id}_{target_tg_id}_{squad_type}_{club_id}", style=ButtonStyle.SUCCESS), 
+         InlineKeyboardButton(text="❌ Отклонить", callback_data=f"decline_inv_{target_tg_id}", style=ButtonStyle.DANGER)]
+    ])
+    
+    try:
+        await bot.send_message(
+            target_tg_id, 
+            f"📩 <b>Вам поступило предложение!</b>\n\nКлуб <b>{club_name}</b> приглашает вас в состав <b>{squad_type}</b>.\n\nПринять предложение?", 
+            parse_mode="HTML", 
+            reply_markup=invite_kb
+        )
+        await safe_edit_text(callback.message, f"✅ Приглашение в {squad_type} отправлено игроку <b>{target_data[1]}</b>.")
+    except Exception:
+        await safe_edit_text(callback.message, "❌ Не удалось отправить сообщение игроку. Возможно, он заблокировал бота.")
+
+@dp.callback_query(F.data.startswith("accept_inv_"))
+async def cb_accept_invite(callback: CallbackQuery):
+    try: await callback.answer()
+    except TelegramBadRequest: pass
+    _, _, owner_tg_id, player_tg_id, squad_type, club_id = callback.data.split("_")
+    
+    # Создаем заявку на трансфер
+    app_id = await create_application(int(player_tg_id), "player_transfer", owner_tg_id, f"{player_tg_id}_{squad_type}_{club_id}", "pending_transfer")
+    
+    admin_kb = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="✅ Подтвердить трансфер", callback_data=f"approve_transfer_{app_id}", style=ButtonStyle.SUCCESS), InlineKeyboardButton(text="❌ Отклонить", callback_data=f"reject_{app_id}", style=ButtonStyle.DANGER)]
+    ])
+    
+    owner_data = await get_user(int(owner_tg_id))
+    player_data = await get_user(int(player_tg_id))
+    async with aiosqlite.connect(DB_PATH) as db:
+        async with db.execute("SELECT name FROM clubs WHERE id = ?", (club_id,)) as cursor:
+            club_name = (await cursor.fetchone())[0]
+
+    await notify_admins(f"🔄 <b>Запрос на трансфер</b>\n\n👤 Игрок: <code>{player_data[1]}</code>\n🛡 Клуб: {club_name}\n📋 Состав: {squad_type}\n\nОдобрить переход?", reply_markup=admin_kb)
+    await safe_edit_text(callback.message, f"⏳ Вы приняли приглашение в {squad_type}. Ожидайте подтверждения от администрации.")
+
+@dp.callback_query(F.data.startswith("decline_inv_"))
+async def cb_decline_invite(callback: CallbackQuery):
+    try: await callback.answer()
+    except TelegramBadRequest: pass
+    await safe_edit_text(callback.message, "❌ Вы отклонили приглашение клуба.")
+
+@dp.callback_query(F.data.startswith("club_kick_"))
+async def cb_club_kick(callback: CallbackQuery):
+    try: await callback.answer()
+    except TelegramBadRequest: pass
+    club_id = int(callback.data.split("_")[2])
+    user_data = await get_user(callback.from_user.id)
+    
+    async with aiosqlite.connect(DB_PATH) as db:
+        async with db.execute("SELECT u.telegram_id, u.roblox_username, c.squad_type FROM contracts c JOIN users u ON c.telegram_id = u.telegram_id WHERE c.club_id = ? AND u.telegram_id != ?", (club_id, user_data[0])) as cursor:
+            players = await cursor.fetchall()
+
+    if not players:
+        await safe_edit_text(callback.message, "В вашем клубе нет игроков.", reply_markup=InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="⬅️ Назад", callback_data=f"manage_club_{club_id}", style=ButtonStyle.DANGER)]]))
+        return
+
+    kb = []
+    for p in players:
+        kb.append([InlineKeyboardButton(text=f"❌ {p[1]} ({p[2]})", callback_data=f"kick_{p[0]}_{club_id}", style=ButtonStyle.DANGER)])
+    kb.append([InlineKeyboardButton(text="⬅️ Назад", callback_data=f"manage_club_{club_id}", style=ButtonStyle.PRIMARY)])
+    
+    await safe_edit_text(callback.message, "🗑 Выберите игрока для исключения:", reply_markup=InlineKeyboardMarkup(inline_keyboard=kb))
+
+@dp.callback_query(F.data.startswith("kick_"))
+async def cb_kick_player(callback: CallbackQuery):
+    try: await callback.answer()
+    except TelegramBadRequest: pass
+    parts = callback.data.split("_")
+    target_tg_id = int(parts[1])
+    club_id = int(parts[2])
+    
+    async with aiosqlite.connect(DB_PATH) as db:
+        # Удаляем контракт
+        await db.execute("DELETE FROM contracts WHERE telegram_id = ? AND club_id = ?", (target_tg_id, club_id))
+        await db.commit()
+        
+    await safe_edit_text(callback.message, "✅ Игрок исключен из клуба.")
+    try:
+        await bot.send_message(target_tg_id, "❌ Вас исключили из клуба.")
+    except: pass
+
+@dp.callback_query(F.data.startswith("club_friendly_"))
+async def cb_club_friendly(callback: CallbackQuery, state: FSMContext):
+    try: await callback.answer()
+    except TelegramBadRequest: pass
+    club_id = int(callback.data.split("_")[2])
+    await state.update_data(active_club_id=club_id)
+    
+    kb = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="3x3", callback_data="friendly_fmt_3x3", style=ButtonStyle.SUCCESS), InlineKeyboardButton(text="4x4", callback_data="friendly_fmt_4x4", style=ButtonStyle.SUCCESS)],
+        [InlineKeyboardButton(text="⬅️ Отмена", callback_data=f"manage_club_{club_id}", style=ButtonStyle.DANGER)]
+    ])
+    await safe_edit_text(callback.message, "⚔️ <b>Поиск товы</b>\n\nШаг 1 из 2. Выберите формат матча:", reply_markup=kb)
+    await state.set_state(Form.friendly_format)
+
+@dp.callback_query(F.data.startswith("friendly_fmt_"), Form.friendly_format)
+async def cb_friendly_format(callback: CallbackQuery, state: FSMContext):
+    try: await callback.answer()
+    except TelegramBadRequest: pass
+    fmt = callback.data.split("_")[2]
+    await state.update_data(fmt=fmt)
+    
+    data = await state.get_data()
+    club_id = data.get('active_club_id')
+    
+    kb = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="Сегодня", callback_data="friendly_time_Сегодня", style=ButtonStyle.SUCCESS), InlineKeyboardButton(text="Сейчас", callback_data="friendly_time_Сейчас", style=ButtonStyle.SUCCESS)],
+        [InlineKeyboardButton(text="В ближайшее время", callback_data="friendly_time_В ближайшее время", style=ButtonStyle.SUCCESS)],
+        [InlineKeyboardButton(text="⬅️ Отмена", callback_data=f"manage_club_{club_id}", style=ButtonStyle.DANGER)]
+    ])
+    await safe_edit_text(callback.message, "⚔️ <b>Поиск товы</b>\n\nШаг 2 из 2. Выберите время:", reply_markup=kb)
+    await state.set_state(Form.friendly_time)
+
+@dp.callback_query(F.data.startswith("friendly_time_"), Form.friendly_time)
+async def cb_friendly_time(callback: CallbackQuery, state: FSMContext):
+    try: await callback.answer()
+    except TelegramBadRequest: pass
+    time_str = callback.data.replace("friendly_time_", "")
+    data = await state.get_data()
+    fmt = data.get('fmt')
+    club_id = data.get('active_club_id')
+    
+    async with aiosqlite.connect(DB_PATH) as db:
+        async with db.execute("SELECT name FROM clubs WHERE id = ?", (club_id,)) as cursor:
+            club_name = (await cursor.fetchone())[0]
+
+    username = f"@{callback.from_user.username}" if callback.from_user.username else f"ID: {callback.from_user.id}"
+    
+    app_id = await create_application(callback.from_user.id, "friendly_match", fmt, time_str, f"{club_name} | {username}")
+    
+    admin_kb = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="✅ Одобрить", callback_data=f"approve_friendly_{app_id}", style=ButtonStyle.SUCCESS), InlineKeyboardButton(text="❌ Отклонить", callback_data=f"reject_{app_id}", style=ButtonStyle.DANGER)]
+    ])
+    
+    post_text = (
+        f"⚔️ ｜ <b>ПОИСК ТОВАРИЩЕСКОГО МАТЧА</b>\n\n"
+        f"🛡 <b>Клуб:</b> {club_name}\n"
+        f"👥 <b>Формат:</b> {fmt}\n"
+        f"⏱ <b>Время:</b> {time_str}\n\n"
+        f"📬 <b>Связь:</b> {username}"
+    )
+    
+    await safe_edit_text(callback.message, "⏳ Заявка на поиск товы отправлена на проверку администрации.")
+    await notify_admins(f"<b>Заявка на поиск товы (ID: {app_id})</b>\n\n{post_text}", reply_markup=admin_kb)
+    await state.clear()
+
+@dp.callback_query(F.data == "advertise")
+async def cb_advertise(callback: CallbackQuery, state: FSMContext):
+    try: await callback.answer()
+    except TelegramBadRequest: pass
+    
+    can_proceed, error_msg = await check_limit(callback.from_user.id, "ad", daily_limit=1, cooldown_hours=0)
+    if not can_proceed:
+        try: await callback.answer(error_msg, show_alert=True)
+        except TelegramBadRequest: pass
+        return
+
+    await safe_edit_text(
+        callback.message,
+        "📢 <b>Размещение объявления</b>\n\n"
+        "Шаг 1 из 2. Напишите текст, который хотите опубликовать в канале (реклама канала, новостника и т.д.):",
+        reply_markup=InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="⬅️ Отмена", callback_data="open_menu", style=ButtonStyle.DANGER)]])
+    )
+    await state.set_state(Form.entering_ad_text)
+
+@dp.message(Form.entering_ad_text, F.text)
+async def process_ad_text(message: Message, state: FSMContext):
+    await state.update_data(ad_text=message.text)
+    await message.answer(
+        "Шаг 2 из 2. Укажите <b>ссылку на ваш канал</b> или ресурс (например: <code>https://t.me/your_channel</code>):",
+        parse_mode="HTML"
+    )
+    await state.set_state(Form.entering_ad_link)
+
+@dp.message(Form.entering_ad_link, F.text)
+async def process_ad_link(message: Message, state: FSMContext):
+    ad_link = message.text.strip()
+    data = await state.get_data()
+    ad_text = data.get('ad_text')
+    
+    username = f"@{message.from_user.username}" if message.from_user.username else f"ID: {message.from_user.id}"
+    
+    app_id = await create_application(message.from_user.id, "ad", ad_text, username, ad_link)
+    
+    admin_kb = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="✅ Одобрить", callback_data=f"approve_ad_{app_id}", style=ButtonStyle.SUCCESS), InlineKeyboardButton(text="❌ Отклонить", callback_data=f"reject_{app_id}", style=ButtonStyle.DANGER)]
+    ])
+    
+    check_text = f"{ad_text}\n\n🔗 <b>Ссылка:</b> {ad_link}\n👤 <b>Публиковал:</b> {username}"
+    
+    await message.answer("⏳ Ваше объявление отправлено на проверку администрации.")
+    await notify_admins(f"<b>Новое объявление (ID: {app_id})</b>\n\n{check_text}", reply_markup=admin_kb)
+    await state.clear()
+
+@dp.callback_query(F.data == "search_club")
+async def cb_search_club(callback: CallbackQuery, state: FSMContext):
+    try: await callback.answer()
+    except TelegramBadRequest: pass
+    user_data = await get_user(callback.from_user.id)
+    if not user_data or user_data[4] == 'Не выбрана':
+        await callback.message.answer("❌ Сначала выберите позицию в профиле.")
+        return
+
+    can_proceed, error_msg = await check_limit(callback.from_user.id, "free_agent", daily_limit=2, cooldown_hours=2)
+    if not can_proceed:
+        try: await callback.answer(error_msg, show_alert=True)
+        except TelegramBadRequest: pass
+        return
+
+    await safe_edit_text(callback.message, "🛡 <b>Создание объявления: Свободный агент</b>\n\nНапишите ваши <b>требования</b>:", reply_markup=InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="⬅️ Отмена", callback_data="open_menu", style=ButtonStyle.DANGER)]]))
+    await state.set_state(Form.entering_requirements)
+
+@dp.message(Form.entering_requirements, F.text)
+async def process_requirements(message: Message, state: FSMContext):
+    await state.update_data(requirements=message.text)
+    await message.answer("Укажите ваш <b>контакт для связи</b>:", parse_mode="HTML")
+    await state.set_state(Form.entering_contact)
+
+@dp.message(Form.entering_contact, F.text)
+async def process_contact(message: Message, state: FSMContext):
+    contact = message.text
+    data = await state.get_data()
+    requirements = data.get('requirements')
+    
+    user_data = await get_user(message.from_user.id)
+    roblox_name, position = user_data[1], user_data[4]
+    emoji = POSITIONS.get(position, "")
+    
+    app_id = await create_application(message.from_user.id, "free_agent", position, requirements, contact)
+    post_text = f"🏆 ｜ <b>СВОБОДНЫЙ АГЕНТ</b>\n\n👤 <b>Игрок:</b> <code>{roblox_name}</code>\n{emoji} <b>Позиция:</b> {position}\n\n📋 <b>Требования:</b>\n<i>{requirements}</i>\n\n📬 <b>Связь:</b> {contact}"
+    
+    admin_kb = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="✅ Одобрить", callback_data=f"approve_agent_{app_id}", style=ButtonStyle.SUCCESS), InlineKeyboardButton(text="❌ Отклонить", callback_data=f"reject_{app_id}", style=ButtonStyle.DANGER)]
+    ])
+    await message.answer("⏳ Ваше объявление отправлено на проверку администрации.")
+    await notify_admins(f"<b>Новая заявка (ID: {app_id})</b>\n\n{post_text}", reply_markup=admin_kb)
+    await state.clear()
+
+@dp.callback_query(F.data == "career")
+async def cb_career(callback: CallbackQuery):
+    try: await callback.answer()
+    except TelegramBadRequest: pass
+    user_data = await get_user(callback.from_user.id)
+    if not user_data: return
+    status = user_data[5]
+    text = f"🏃‍♂️ <b>Управление карьерой</b>\n\nТекущий статус: <b>{status}</b>\n\nВыберите действие:"
+    buttons = []
+    if status == "Активна":
+        buttons.append([InlineKeyboardButton(text="⏸ Приостановить", callback_data="career_pause", style=ButtonStyle.PRIMARY)])
+        buttons.append([InlineKeyboardButton(text="🏁 Завершить карьеру", callback_data="career_finish", style=ButtonStyle.DANGER)])
+    elif status == "Приостановлена":
+        buttons.append([InlineKeyboardButton(text="▶️ Возобновить", callback_data="career_resume", style=ButtonStyle.SUCCESS)])
+        buttons.append([InlineKeyboardButton(text="🏁 Завершить карьеру", callback_data="career_finish", style=ButtonStyle.DANGER)])
+    elif status == "Завершена":
+        text = "🏃‍♂️ <b>Управление карьерой</b>\n\nВаша карьера <b>завершена</b>."
+        buttons.append([InlineKeyboardButton(text="▶️ Вернуть карьеру", callback_data="career_resume", style=ButtonStyle.SUCCESS)])
+    buttons.append([InlineKeyboardButton(text="⬅️ Назад в меню", callback_data="open_menu", style=ButtonStyle.PRIMARY)])
+    await safe_edit_text(callback.message, text, reply_markup=InlineKeyboardMarkup(inline_keyboard=buttons))
+
+@dp.callback_query(F.data == "career_pause")
+async def cb_career_pause(callback: CallbackQuery):
+    try: await callback.answer()
+    except TelegramBadRequest: pass
+    await update_user_field(callback.from_user.id, "career_status", "Приостановлена")
+    try: await callback.answer("Карьера приостановлена.", show_alert=True)
+    except TelegramBadRequest: pass
+    await cb_career(callback)
+
+@dp.callback_query(F.data == "career_resume")
+async def cb_career_resume(callback: CallbackQuery):
+    try: await callback.answer()
+    except TelegramBadRequest: pass
+    await update_user_field(callback.from_user.id, "career_status", "Активна")
+    try: await callback.answer("Карьера возобновлена.", show_alert=True)
+    except TelegramBadRequest: pass
+    await cb_career(callback)
+
+@dp.callback_query(F.data == "career_finish")
+async def cb_career_finish(callback: CallbackQuery, state: FSMContext):
+    try: await callback.answer()
+    except TelegramBadRequest: pass
+    await safe_edit_text(callback.message, "🏁 <b>Завершение карьеры</b>\n\nНапишите причину завершения карьеры:", reply_markup=InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="⬅️ Отмена", callback_data="career", style=ButtonStyle.DANGER)]]))
+    await state.set_state(Form.career_finish_reason)
+
+@dp.message(Form.career_finish_reason, F.text)
+async def process_career_finish(message: Message, state: FSMContext):
+    reason = message.text
+    user_data = await get_user(message.from_user.id)
+    app_id = await create_application(message.from_user.id, "career_finish", user_data[4], reason, "none")
+    admin_kb = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="✅ Одобрить", callback_data=f"approve_career_{app_id}", style=ButtonStyle.SUCCESS), InlineKeyboardButton(text="❌ Отклонить", callback_data=f"reject_{app_id}", style=ButtonStyle.DANGER)]
+    ])
+    await message.answer("⏳ Запрос на завершение карьеры отправлен администрации.")
+    await notify_admins(f"<b>Завершение карьеры</b>\nОт: {user_data[1]}\nПричина:\n{reason}", reply_markup=admin_kb)
+    await state.clear()
+
+@dp.callback_query(F.data == "application")
+async def cb_application(callback: CallbackQuery):
+    try: await callback.answer()
+    except TelegramBadRequest: pass
+    kb = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="🛡 Заявление на клуб", callback_data="app_club", style=ButtonStyle.SUCCESS)],
+        [InlineKeyboardButton(text="👑 Заявление в администрацию", callback_data="app_admin", style=ButtonStyle.PRIMARY)],
+        [InlineKeyboardButton(text="⬅️ Назад", callback_data="open_menu", style=ButtonStyle.DANGER)]
+    ])
+    await safe_edit_text(callback.message, "📝 <b>Подать заявление</b>\n\nВыберите тип заявления:", reply_markup=kb)
+
+@dp.callback_query(F.data == "app_club")
+async def cb_app_club(callback: CallbackQuery, state: FSMContext):
+    try: await callback.answer()
+    except TelegramBadRequest: pass
+    await safe_edit_text(callback.message, "🛡 <b>Заявление на клуб</b>\n\nШаг 1 из 2. Введите название вашего клуба:", reply_markup=InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="⬅️ Отмена", callback_data="application", style=ButtonStyle.DANGER)]]))
+    await state.set_state(Form.club_app_name)
+
+@dp.message(Form.club_app_name, F.text)
+async def process_club_name(message: Message, state: FSMContext):
+    await state.update_data(club_name=message.text)
+    await message.answer("Шаг 2 из 2. Отправьте <b>логотип</b> вашего клуба (как фото):", parse_mode="HTML")
+    await state.set_state(Form.club_app_logo)
+
+@dp.message(Form.club_app_logo, F.photo)
+async def process_club_logo(message: Message, state: FSMContext):
+    data = await state.get_data()
+    club_name = data.get('club_name')
+    file_id = message.photo[-1].file_id
+    user_data = await get_user(message.from_user.id)
+    
+    app_id = await create_application(message.from_user.id, "club_app", club_name, file_id, user_data[1])
+    
+    caption = f"🛡 <b>Новая заявка на клуб</b>\n\n🏷 <b>Название:</b> {club_name}\n👤 <b>От:</b> @{message.from_user.username}\n🎮 <b>Roblox:</b> {user_data[1]}"
+    admin_kb = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="✅ Одобрить", callback_data=f"approve_club_{app_id}", style=ButtonStyle.SUCCESS), InlineKeyboardButton(text="❌ Отклонить", callback_data=f"reject_{app_id}", style=ButtonStyle.DANGER)]
+    ])
+    
+    await message.answer("⏳ Заявление на клуб отправлено на проверку.")
+    await notify_admins(caption, photo=file_id, reply_markup=admin_kb)
+    await state.clear()
+
+@dp.callback_query(F.data == "app_admin")
+async def cb_app_admin(callback: CallbackQuery, state: FSMContext):
+    try: await callback.answer()
+    except TelegramBadRequest: pass
+    is_open = await get_setting('admin_apps_open')
+    if is_open != 'True':
+        await safe_edit_text(callback.message, "❌ На данный момент набор в администрацию <b>закрыт</b>.", reply_markup=InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="⬅️ Назад", callback_data="application", style=ButtonStyle.DANGER)]]))
+        return
+        
+    await safe_edit_text(callback.message, "👑 <b>Заявление в администрацию</b>\n\nШаг 1 из 2. На какую <b>должность</b> вы претендуете?:", reply_markup=InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="⬅️ Отмена", callback_data="application", style=ButtonStyle.DANGER)]]))
+    await state.set_state(Form.admin_app_position)
+
+@dp.message(Form.admin_app_position, F.text)
+async def process_admin_pos(message: Message, state: FSMContext):
+    await state.update_data(admin_pos=message.text)
+    await message.answer("Шаг 2 из 2. Опишите ваш <b>опыт</b> и расскажите о себе:", parse_mode="HTML")
+    await state.set_state(Form.admin_app_experience)
+
+@dp.message(Form.admin_app_experience, F.text)
+async def process_admin_exp(message: Message, state: FSMContext):
+    data = await state.get_data()
+    admin_pos = data.get('admin_pos')
+    experience = message.text
+    user_data = await get_user(message.from_user.id)
+    
+    app_id = await create_application(message.from_user.id, "admin_app", admin_pos, experience, user_data[1])
+    
+    text = f"👑 <b>Заявка в администрацию</b>\n\n💼 <b>Должность:</b> {admin_pos}\n👤 <b>От:</b> @{message.from_user.username}\n🎮 <b>Roblox:</b> {user_data[1]}\n\n📝 <b>Опыт:</b>\n<i>{experience}</i>"
+    admin_kb = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="✅ Одобрить", callback_data=f"approve_adminapp_{app_id}", style=ButtonStyle.SUCCESS), InlineKeyboardButton(text="❌ Отклонить", callback_data=f"reject_{app_id}", style=ButtonStyle.DANGER)]
+    ])
+    
+    await message.answer("⏳ Заявление в администрацию отправлено на проверку.")
+    await notify_admins(text, reply_markup=admin_kb)
+    await state.clear()
+
+@dp.callback_query(F.data == "my_apps")
+async def cb_my_apps(callback: CallbackQuery):
+    try: await callback.answer()
+    except TelegramBadRequest: pass
+    apps = await get_user_applications(callback.from_user.id)
+    if not apps:
+        text = "📨 <b>Мои заявки</b>\n\nУ вас пока нет отправленных заявок."
+    else:
+        text = "📨 <b>Мои заявки (последние 10)</b>\n\n"
+        for app in apps:
+            app_id, app_type, text1, status = app
+            type_name = APP_TYPES.get(app_type, "Заявка")
+            status_icon = "⏳ На рассмотрении" if status == 'pending' else ("✅ Одобрено" if status == 'approved' else "❌ Отклонено")
+            text += f"🔹 <b>{type_name}</b> (ID: {app_id})\n"
+            if app_type in ["free_agent", "career_finish"]: text += f"   Позиция: {text1}\n"
+            elif app_type in ["club_app", "admin_app", "club_search", "friendly_match"]: text += f"   Детали: {text1}\n"
+            elif app_type == "ad": text += f"   Текст: {text1[:20]}...\n"
+            text += f"   Статус: {status_icon}\n\n"
+    keyboard = InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="⬅️ Назад в меню", callback_data="open_menu", style=ButtonStyle.PRIMARY)]])
+    await safe_edit_text(callback.message, text, reply_markup=keyboard)
+
+# ================= АДМИН ПАНЕЛЬ =================
+
+async def show_admin_manage_admins(target):
+    text = "👑 <b>Управление администраторами</b>\n\n"
+    text += f"👤 Владелец: <code>{OWNER_ID}</code> (нельзя удалить)\n\n"
+    
+    kb = []
+    async with aiosqlite.connect(DB_PATH) as db:
+        async with db.execute("SELECT telegram_id FROM admins") as cursor:
+            rows = await cursor.fetchall()
+            for r in rows:
+                kb.append([InlineKeyboardButton(text=f"❌ Удалить админа {r[0]}", callback_data=f"admin_remove_{r[0]}", style=ButtonStyle.DANGER)])
+    
+    kb.append([InlineKeyboardButton(text="➕ Добавить админа", callback_data="admin_add", style=ButtonStyle.SUCCESS)])
+    kb.append([InlineKeyboardButton(text="⬅️ Назад", callback_data="admin_back", style=ButtonStyle.PRIMARY)])
+    markup = InlineKeyboardMarkup(inline_keyboard=kb)
+    
+    if isinstance(target, CallbackQuery):
+        await safe_edit_text(target.message, text, reply_markup=markup)
+    else:
+        await target.answer(text, parse_mode="HTML", reply_markup=markup)
+
+async def show_admin_club_info(target, club_id):
+    async with aiosqlite.connect(DB_PATH) as db:
+        async with db.execute("SELECT name, owner_id FROM clubs WHERE id = ?", (club_id,)) as cursor:
+            club = await cursor.fetchone()
+            
+    if not club:
+        if isinstance(target, CallbackQuery):
+            try: await target.answer("Клуб не найден.", show_alert=True)
+            except TelegramBadRequest: pass
+        else:
+            await target.answer("Клуб не найден.")
+        return
+        
+    name, owner_id = club
+    text = f"🛡 <b>Управление клубом</b>\n\n🏷 <b>Название:</b> {name}\n👑 <b>ID Владельца:</b> <code>{owner_id}</code>"
+    
+    kb = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="✏️ Переименовать", callback_data=f"admin_rename_{club_id}", style=ButtonStyle.PRIMARY)],
+        [InlineKeyboardButton(text="🗑 Удалить клуб", callback_data=f"admin_delclub_{club_id}", style=ButtonStyle.DANGER)],
+        [InlineKeyboardButton(text="⬅️ Назад", callback_data="admin_manage_clubs", style=ButtonStyle.PRIMARY)]
+    ])
+    
+    if isinstance(target, CallbackQuery):
+        await safe_edit_text(target.message, text, reply_markup=kb)
+    else:
+        await target.answer(text, parse_mode="HTML", reply_markup=kb)
+
+@dp.message(Command("admin"))
+async def cmd_admin(message: Message):
+    if not await is_admin(message.from_user.id): return
+    
+    kb = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="📊 Статистика", callback_data="admin_stats", style=ButtonStyle.PRIMARY)],
+        [InlineKeyboardButton(text="👑 Управление админами", callback_data="admin_manage_admins", style=ButtonStyle.PRIMARY)],
+        [InlineKeyboardButton(text="🛡 Управление клубами", callback_data="admin_manage_clubs", style=ButtonStyle.PRIMARY)],
+        [InlineKeyboardButton(text="⚙️ Настройки", callback_data="admin_settings", style=ButtonStyle.PRIMARY)]
+    ])
+    await message.answer("👑 <b>Админ-панель RGS</b>\n\nДобро пожаловать в панель управления. Выберите раздел:", parse_mode="HTML", reply_markup=kb)
+
+@dp.callback_query(F.data == "admin_stats", IsAdmin())
+async def admin_stats(callback: CallbackQuery):
+    try: await callback.answer()
+    except TelegramBadRequest: pass
+    async with aiosqlite.connect(DB_PATH) as db:
+        async with db.execute("SELECT COUNT(*) FROM users") as c1: users_count = (await c1.fetchone())[0]
+        async with db.execute("SELECT COUNT(*) FROM clubs") as c2: clubs_count = (await c2.fetchone())[0]
+        async with db.execute("SELECT COUNT(*) FROM applications WHERE status='pending'") as c3: apps_pending = (await c3.fetchone())[0]
+        async with db.execute("SELECT COUNT(*) FROM tickets WHERE status='open'") as c4: tickets_open = (await c4.fetchone())[0]
+
+    text = (
+        f"📊 <b>Статистика бота</b>\n\n"
+        f"👥 Всего игроков: <code>{users_count}</code>\n"
+        f"🛡 Всего клубов: <code>{clubs_count}</code>\n"
+        f"⏳ Заявок на модерации: <code>{apps_pending}</code>\n"
+        f"🎫 Открытых тикетов: <code>{tickets_open}</code>"
+    )
+    kb = InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="⬅️ Назад", callback_data="admin_back", style=ButtonStyle.PRIMARY)]])
+    await safe_edit_text(callback.message, text, reply_markup=kb)
+
+@dp.callback_query(F.data == "admin_settings", IsAdmin())
+async def admin_settings(callback: CallbackQuery):
+    try: await callback.answer()
+    except TelegramBadRequest: pass
+    is_open = await get_setting('admin_apps_open')
+    status_text = "🟢 ОТКРЫТЫ" if is_open == 'True' else "🔴 ЗАКРЫТЫ"
+    btn_text = "Закрыть заявки" if is_open == 'True' else "Открыть заявки"
+    
+    kb = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text=f"Заявки в админы: {status_text}", callback_data="noop", style=ButtonStyle.PRIMARY)],
+        [InlineKeyboardButton(text=f"⚙️ {btn_text}", callback_data="toggle_admin_apps", style=ButtonStyle.DANGER if is_open == 'True' else ButtonStyle.SUCCESS)],
+        [InlineKeyboardButton(text="⬅️ Назад", callback_data="admin_back", style=ButtonStyle.PRIMARY)]
+    ])
+    await safe_edit_text(callback.message, "⚙️ <b>Настройки бота</b>", reply_markup=kb)
+
+@dp.callback_query(F.data == "toggle_admin_apps", IsAdmin())
+async def cb_toggle_admin(callback: CallbackQuery):
+    try: await callback.answer()
+    except TelegramBadRequest: pass
+    is_open = await get_setting('admin_apps_open')
+    new_val = 'False' if is_open == 'True' else 'True'
+    await set_setting('admin_apps_open', new_val)
+    await admin_settings(callback)
+
+@dp.callback_query(F.data == "admin_manage_admins", IsAdmin())
+async def admin_manage_admins(callback: CallbackQuery):
+    try: await callback.answer()
+    except TelegramBadRequest: pass
+    await show_admin_manage_admins(callback)
+
+@dp.callback_query(F.data == "admin_add", IsAdmin())
+async def admin_add(callback: CallbackQuery, state: FSMContext):
+    try: await callback.answer()
+    except TelegramBadRequest: pass
+    await safe_edit_text(
+        callback.message,
+        "Отправьте <b>Telegram ID</b> пользователя, которого хотите назначить админом.\n\n"
+        "<i>(Узнать ID можно у бота @userinfobot)</i>", 
+        reply_markup=InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="⬅️ Отмена", callback_data="admin_manage_admins", style=ButtonStyle.DANGER)]])
+    )
+    await state.set_state(Form.entering_new_admin_id)
+
+@dp.message(Form.entering_new_admin_id, IsAdmin())
+async def process_new_admin(message: Message, state: FSMContext):
+    try:
+        new_id = int(message.text.strip())
+    except ValueError:
+        await message.answer("❌ ID должен быть числом. Попробуйте снова.")
+        return
+        
+    if new_id == OWNER_ID:
+        await message.answer("❌ Этот пользователь уже является владельцем.")
+        return
+        
+    async with aiosqlite.connect(DB_PATH) as db:
+        try:
+            await db.execute("INSERT INTO admins (telegram_id, added_by) VALUES (?, ?)", (new_id, message.from_user.id))
+            await db.commit()
+            await message.answer(f"✅ Пользователь <code>{new_id}</code> успешно назначен администратором!", parse_mode="HTML")
+        except aiosqlite.IntegrityError:
+            await message.answer("❌ Этот пользователь уже является администратором.")
+            
+    await state.clear()
+    await show_admin_manage_admins(message)
+
+@dp.callback_query(F.data.startswith("admin_remove_"), IsAdmin())
+async def admin_remove(callback: CallbackQuery):
+    target_id = int(callback.data.split("_")[2])
+    try: await callback.answer(f"✅ Админ {target_id} удален.", show_alert=True)
+    except TelegramBadRequest: pass
+    
+    async with aiosqlite.connect(DB_PATH) as db:
+        await db.execute("DELETE FROM admins WHERE telegram_id = ?", (target_id,))
+        await db.commit()
+        
+    await show_admin_manage_admins(callback)
+
+@dp.callback_query(F.data == "admin_manage_clubs", IsAdmin())
+async def admin_manage_clubs(callback: CallbackQuery):
+    try: await callback.answer()
+    except TelegramBadRequest: pass
+    
+    async with aiosqlite.connect(DB_PATH) as db:
+        async with db.execute("SELECT id, name FROM clubs LIMIT 15") as cursor:
+            clubs = await cursor.fetchall()
+            
+    if not clubs:
+        text = "🛡 <b>Управление клубами</b>\n\nКлубов пока нет."
+        kb = InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="⬅️ Назад", callback_data="admin_back", style=ButtonStyle.PRIMARY)]])
+    else:
+        text = "🛡 <b>Управление клубами</b>\n\nВыберите клуб для управления:"
+        kb_list = []
+        for c in clubs:
+            kb_list.append([InlineKeyboardButton(text=f"⚙️ {c[1]}", callback_data=f"admin_club_{c[0]}", style=ButtonStyle.PRIMARY)])
+        kb_list.append([InlineKeyboardButton(text="⬅️ Назад", callback_data="admin_back", style=ButtonStyle.PRIMARY)])
+        kb = InlineKeyboardMarkup(inline_keyboard=kb_list)
+        
+    await safe_edit_text(callback.message, text, reply_markup=kb)
+
+@dp.callback_query(F.data.startswith("admin_club_"), IsAdmin())
+async def admin_club_info(callback: CallbackQuery):
+    try: await callback.answer()
+    except TelegramBadRequest: pass
+    club_id = int(callback.data.split("_")[2])
+    await show_admin_club_info(callback, club_id)
+
+@dp.callback_query(F.data.startswith("admin_rename_"), IsAdmin())
+async def admin_rename_club(callback: CallbackQuery, state: FSMContext):
+    try: await callback.answer()
+    except TelegramBadRequest: pass
+    club_id = int(callback.data.split("_")[2])
+    await state.update_data(rename_club_id=club_id)
+    
+    await safe_edit_text(callback.message, "Напишите новое название для этого клуба:", reply_markup=InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="⬅️ Отмена", callback_data=f"admin_club_{club_id}", style=ButtonStyle.DANGER)]]))
+    await state.set_state(Form.entering_rename_club)
+
+@dp.message(Form.entering_rename_club, IsAdmin())
+async def process_rename_club(message: Message, state: FSMContext):
+    data = await state.get_data()
+    club_id = data.get('rename_club_id')
+    new_name = message.text.strip()
+    
+    async with aiosqlite.connect(DB_PATH) as db:
+        await db.execute("UPDATE clubs SET name = ? WHERE id = ?", (new_name, club_id))
+        await db.commit()
+        
+    await message.answer(f"✅ Клуб успешно переименован в <b>{new_name}</b>!", parse_mode="HTML")
+    await state.clear()
+    await show_admin_club_info(message, club_id)
+
+@dp.callback_query(F.data.startswith("admin_delclub_"), IsAdmin())
+async def admin_delclub(callback: CallbackQuery):
+    club_id = int(callback.data.split("_")[2])
+    try: await callback.answer("Удаление...", show_alert=True)
+    except TelegramBadRequest: pass
+    
+    async with aiosqlite.connect(DB_PATH) as db:
+        await db.execute("UPDATE users SET club_id = NULL, is_owner = 0 WHERE club_id = ?", (club_id,)) # Старая колонка, оставим для совместимости
+        await db.execute("DELETE FROM contracts WHERE club_id = ?", (club_id,))
+        await db.execute("DELETE FROM clubs WHERE id = ?", (club_id,))
+        await db.commit()
+        
+    await safe_edit_text(callback.message, "✅ Клуб успешно удален. Все игроки стали свободными агентами.", reply_markup=InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="⬅️ Назад", callback_data="admin_manage_clubs", style=ButtonStyle.PRIMARY)]]))
+
+@dp.callback_query(F.data == "admin_back", IsAdmin())
+async def admin_back(callback: CallbackQuery, state: FSMContext):
+    try: await callback.answer()
+    except TelegramBadRequest: pass
+    await state.clear()
+    kb = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="📊 Статистика", callback_data="admin_stats", style=ButtonStyle.PRIMARY)],
+        [InlineKeyboardButton(text="👑 Управление админами", callback_data="admin_manage_admins", style=ButtonStyle.PRIMARY)],
+        [InlineKeyboardButton(text="🛡 Управление клубами", callback_data="admin_manage_clubs", style=ButtonStyle.PRIMARY)],
+        [InlineKeyboardButton(text="⚙️ Настройки", callback_data="admin_settings", style=ButtonStyle.PRIMARY)]
+    ])
+    await safe_edit_text(callback.message, "👑 <b>Админ-панель RGS</b>\n\nДобро пожаловать в панель управления. Выберите раздел:", reply_markup=kb)
+
+# --- МОДЕРАЦИЯ ЗАЯВОК (С ОТВЕТОМ КТО СДЕЛАЛ) ---
+@dp.callback_query(F.data.startswith("approve_agent_"), IsAdmin())
+async def approve_agent(callback: CallbackQuery):
+    try: await callback.answer()
+    except TelegramBadRequest: pass
+    app_id = int(callback.data.split("_")[2])
+    app_data = await get_application(app_id)
+    tg_id, _, position, requirements, contact = app_data
+    user_data = await get_user(tg_id)
+    emoji = POSITIONS.get(position, "")
+    post_text = f"🏆 ｜ <b>СВОБОДНЫЙ АГЕНТ</b>\n\n👤 <b>Игрок:</b> <code>{user_data[1]}</code>\n{emoji} <b>Позиция:</b> {position}\n\n📋 <b>Требования:</b>\n<i>{requirements}</i>\n\n📬 <b>Связь:</b> {contact}"
+    try:
+        await bot.send_message(CHANNEL_ID, post_text, parse_mode="HTML")
+        await update_app_status(app_id, "approved")
+        
+        try: await callback.message.edit_reply_markup(reply_markup=None)
+        except TelegramBadRequest: pass
+        
+        admin_name = callback.from_user.full_name
+        await callback.message.reply(f"✅ Заявка #{app_id} одобрена администратором {admin_name}.")
+        
+        await bot.send_message(tg_id, "✅ Ваше объявление (Свободный агент) одобрено!")
+    except Exception as e:
+        try: await callback.message.reply(f"⚠️ Ошибка: {e}")
+        except: pass
+
+@dp.callback_query(F.data.startswith("approve_club_"), IsAdmin())
+async def approve_club(callback: CallbackQuery):
+    try: await callback.answer()
+    except TelegramBadRequest: pass
+    app_id = int(callback.data.split("_")[2])
+    app_data = await get_application(app_id)
+    tg_id, _, club_name, file_id, roblox_name = app_data
+    
+    async with aiosqlite.connect(DB_PATH) as db:
+        cursor = await db.execute("INSERT INTO clubs (name, logo_id, owner_id) VALUES (?, ?, ?)", (club_name, file_id, tg_id))
+        club_id = cursor.lastrowid
+        await db.execute("INSERT INTO contracts (telegram_id, club_id, squad_type) VALUES (?, ?, 'Основа')", (tg_id, club_id))
+        await db.commit()
+
+    post_text = f"🛡 ｜ <b>НОВЫЙ КЛУБ</b>\n\n🏷 <b>Название:</b> {club_name}\n👤 <b>Владелец:</b> <code>{roblox_name}</code>"
+    try:
+        await bot.send_photo(CHANNEL_ID, photo=file_id, caption=post_text, parse_mode="HTML")
+        await update_app_status(app_id, "approved")
+        
+        try: await callback.message.edit_reply_markup(reply_markup=None)
+        except TelegramBadRequest: pass
+        
+        admin_name = callback.from_user.full_name
+        await callback.message.reply(f"✅ Заявка на клуб #{app_id} одобрена администратором {admin_name}.")
+        
+        await bot.send_message(tg_id, "✅ Ваше заявление на клуб одобрено! Вам доступен раздел 'Мои клубы'.")
+    except Exception as e:
+        try: await callback.message.reply(f"⚠️ Ошибка при публикации: {e}")
+        except: pass
+
+@dp.callback_query(F.data.startswith("approve_clubsearch_"), IsAdmin())
+async def approve_clubsearch(callback: CallbackQuery):
+    try: await callback.answer()
+    except TelegramBadRequest: pass
+    app_id = int(callback.data.split("_")[2])
+    app_data = await get_application(app_id)
+    tg_id, _, needed_pos, reqs, club_name = app_data
+    user_data = await get_user(tg_id)
+    
+    post_text = (
+        f"🔍 ｜ <b>ПОИСК ИГРОКОВ</b>\n\n"
+        f"🛡 <b>Клуб:</b> {club_name}\n"
+        f"🎯 <b>Нужные позиции:</b> {needed_pos}\n\n"
+        f"📋 <b>Требования:</b>\n"
+        f"<i>{reqs}</i>\n\n"
+        f"📬 <b>Связь:</b> @{user_data[6]}"
+    )
+    
+    try:
+        await bot.send_message(CHANNEL_ID, post_text, parse_mode="HTML")
+        await update_app_status(app_id, "approved")
+        
+        try: await callback.message.edit_reply_markup(reply_markup=None)
+        except TelegramBadRequest: pass
+        
+        admin_name = callback.from_user.full_name
+        await callback.message.reply(f"✅ Заявка на поиск #{app_id} одобрена администратором {admin_name}.")
+        
+        await bot.send_message(tg_id, "✅ Ваше объявление о поиске игроков одобрено и опубликовано в канале!")
+    except Exception as e:
+        try: await callback.message.reply(f"⚠️ Ошибка: {e}")
+        except: pass
+
+@dp.callback_query(F.data.startswith("approve_adminapp_"), IsAdmin())
+async def approve_adminapp(callback: CallbackQuery):
+    try: await callback.answer()
+    except TelegramBadRequest: pass
+    app_id = int(callback.data.split("_")[2])
+    app_data = await get_application(app_id)
+    tg_id = app_data[0]
+    await update_app_status(app_id, "approved")
+    
+    try: await callback.message.edit_reply_markup(reply_markup=None)
+    except TelegramBadRequest: pass
+    
+    admin_name = callback.from_user.full_name
+    await callback.message.reply(f"✅ Заявка в администрацию #{app_id} одобрена администратором {admin_name}.")
+    
+    await bot.send_message(tg_id, "✅ Ваша заявка в администрацию одобрена! С вами свяжутся.")
+
+@dp.callback_query(F.data.startswith("approve_nick_"), IsAdmin())
+async def approve_nick(callback: CallbackQuery):
+    try: await callback.answer()
+    except TelegramBadRequest: pass
+    app_id = int(callback.data.split("_")[2])
+    app_data = await get_application(app_id)
+    tg_id, _, new_nick, new_id, _ = app_data
+    async with aiosqlite.connect(DB_PATH) as db:
+        await db.execute("UPDATE users SET roblox_username = ?, roblox_id = ? WHERE telegram_id = ?", (new_nick, new_id, tg_id))
+        await db.commit()
+    await update_app_status(app_id, "approved")
+    
+    try: await callback.message.edit_reply_markup(reply_markup=None)
+    except TelegramBadRequest: pass
+    
+    admin_name = callback.from_user.full_name
+    await callback.message.reply(f"✅ Смена ника на {new_nick} (#{app_id}) одобрена администратором {admin_name}.")
+    
+    await bot.send_message(tg_id, f"✅ Ваш новый ник <code>{new_nick}</code> одобрен!", parse_mode="HTML")
+
+@dp.callback_query(F.data.startswith("approve_career_"), IsAdmin())
+async def approve_career(callback: CallbackQuery):
+    try: await callback.answer()
+    except TelegramBadRequest: pass
+    app_id = int(callback.data.split("_")[2])
+    app_data = await get_application(app_id)
+    tg_id, _, position, reason, _ = app_data
+    user_data = await get_user(tg_id)
+    emoji = POSITIONS.get(position, "")
+    post_text = f"🏁 ｜ <b>ЗАВЕРШЕНИЕ КАРЬЕРЫ</b>\n\n👤 <b>Игрок:</b> <code>{user_data[1]}</code>\n{emoji} <b>Позиция:</b> {position}\n\n📝 <b>Сообщение:</b>\n<i>{reason}</i>"
+    await update_user_field(tg_id, "career_status", "Завершена")
+    await update_app_status(app_id, "approved")
+    try:
+        await bot.send_message(CHANNEL_ID, post_text, parse_mode="HTML")
+        
+        try: await callback.message.edit_reply_markup(reply_markup=None)
+        except TelegramBadRequest: pass
+        
+        admin_name = callback.from_user.full_name
+        await callback.message.reply(f"✅ Завершение карьеры #{app_id} одобрено администратором {admin_name}.")
+        
+        await bot.send_message(tg_id, "✅ Ваша карьера официально завершена.")
+    except Exception as e:
+        try: await callback.message.reply(f"⚠️ Ошибка: {e}")
+        except: pass
+
+@dp.callback_query(F.data.startswith("approve_friendly_"), IsAdmin())
+async def approve_friendly(callback: CallbackQuery):
+    try: await callback.answer()
+    except TelegramBadRequest: pass
+    app_id = int(callback.data.split("_")[2])
+    app_data = await get_application(app_id)
+    tg_id, _, fmt, time_str, club_and_username = app_data
+    
+    try:
+        club_name, username = club_and_username.split(" | ")
+    except ValueError:
+        club_name = club_and_username
+        username = "Не указана"
+    
+    post_text = (
+        f"⚔️ ｜ <b>ПОИСК ТОВАРИЩЕСКОГО МАТЧА</b>\n\n"
+        f"🛡 <b>Клуб:</b> {club_name}\n"
+        f"👥 <b>Формат:</b> {fmt}\n"
+        f"⏱ <b>Время:</b> {time_str}\n\n"
+        f"📬 <b>Связь:</b> {username}"
+    )
+    
+    try:
+        await bot.send_message(CHANNEL_ID, post_text, parse_mode="HTML")
+        await update_app_status(app_id, "approved")
+        
+        try: await callback.message.edit_reply_markup(reply_markup=None)
+        except TelegramBadRequest: pass
+        
+        admin_name = callback.from_user.full_name
+        await callback.message.reply(f"✅ Заявка на поиск товы #{app_id} одобрена администратором {admin_name}.")
+        
+        await bot.send_message(tg_id, "✅ Ваше объявление о поиске товы одобрено и опубликовано в канале!")
+    except Exception as e:
+        try: await callback.message.reply(f"⚠️ Ошибка: {e}")
+        except: pass
+
+@dp.callback_query(F.data.startswith("approve_ad_"), IsAdmin())
+async def approve_ad(callback: CallbackQuery):
+    try: await callback.answer()
+    except TelegramBadRequest: pass
+    app_id = int(callback.data.split("_")[2])
+    app_data = await get_application(app_id)
+    tg_id, _, ad_text, username, ad_link = app_data
+
+    post_text = f"{ad_text}\n\n🔗 <b>Ссылка:</b> {ad_link}\n👤 <b>Публиковал:</b> {username}"
+    
+    try:
+        await bot.send_message(CHANNEL_ID, post_text, parse_mode="HTML")
+        await update_app_status(app_id, "approved")
+        
+        try: await callback.message.edit_reply_markup(reply_markup=None)
+        except TelegramBadRequest: pass
+        
+        admin_name = callback.from_user.full_name
+        await callback.message.reply(f"✅ Объявление #{app_id} одобрено администратором {admin_name}.")
+        
+        await bot.send_message(tg_id, "✅ Ваше объявление одобрено и опубликовано в канале!")
+    except Exception as e:
+        try: await callback.message.reply(f"⚠️ Ошибка: {e}")
+        except: pass
+
+@dp.callback_query(F.data.startswith("approve_transfer_"), IsAdmin())
+async def cb_approve_transfer(callback: CallbackQuery):
+    try: await callback.answer()
+    except TelegramBadRequest: pass
+    app_id = int(callback.data.split("_")[2])
+    app_data = await get_application(app_id)
+    _, _, owner_tg_id, player_info, _ = app_data
+    
+    player_tg_id, squad_type, club_id = player_info.split("_")
+    player_tg_id = int(player_tg_id)
+    club_id = int(club_id)
+    
+    player_data = await get_user(player_tg_id)
+    
+    async with aiosqlite.connect(DB_PATH) as db:
+        async with db.execute("SELECT name FROM clubs WHERE id = ?", (club_id,)) as cursor:
+            club_name = (await cursor.fetchone())[0]
+            
+        # Добавляем контракт
+        await db.execute("INSERT OR IGNORE INTO contracts (telegram_id, club_id, squad_type) VALUES (?, ?, ?)", (player_tg_id, club_id, squad_type))
+        await db.commit()
+        
+    await update_app_status(app_id, "approved")
+    
+    post_text = f"🔄 ｜ <b>ТРАНСФЕР ЗАВЕРШЕН</b>\n\n👤 <b>Игрок:</b> <code>{player_data[1]}</code>\n🛡 <b>Новый клуб:</b> {club_name}\n📋 <b>Состав:</b> {squad_type}"
+    try:
+        await bot.send_message(CHANNEL_ID, post_text, parse_mode="HTML")
+        
+        try: await callback.message.edit_reply_markup(reply_markup=None)
+        except TelegramBadRequest: pass
+        
+        admin_name = callback.from_user.full_name
+        await callback.message.reply(f"✅ Трансфер #{app_id} одобрен администратором {admin_name}.")
+        
+        await bot.send_message(player_tg_id, f"✅ Ваш переход в клуб <b>{club_name}</b> ({squad_type}) одобрен!", parse_mode="HTML")
+        await bot.send_message(int(owner_tg_id), f"✅ Игрок <code>{player_data[1]}</code> успешно принят в ваш клуб ({squad_type})!", parse_mode="HTML")
+    except Exception as e:
+        try: await callback.message.reply(f"⚠️ Ошибка: {e}")
+        except: pass
+
+@dp.callback_query(F.data.startswith("reject_"), IsAdmin())
+async def reject_app(callback: CallbackQuery):
+    try: await callback.answer()
+    except TelegramBadRequest: pass
+    
+    parts = callback.data.split("_")
+    app_id = int(parts[-1])
+    app_data = await get_application(app_id)
+    
+    if not app_data:
+        return
+        
+    tg_id = app_data[0]
+    app_type = app_data[1]
+    
+    await update_app_status(app_id, "rejected")
+    
+    try: await callback.message.edit_reply_markup(reply_markup=None)
+    except TelegramBadRequest: pass
+    
+    admin_name = callback.from_user.full_name
+    try:
+        await callback.message.reply(f"❌ Заявка #{app_id} отклонена администратором {admin_name}.")
+    except TelegramBadRequest:
+        pass
+        
+    try:
+        await bot.send_message(tg_id, "❌ К сожалению, ваша заявка была отклонена.")
+    except Exception:
+        pass
+
+@dp.callback_query(F.data == "info")
+async def cb_info(callback: CallbackQuery):
+    try: await callback.answer()
+    except TelegramBadRequest: pass
+    info_text = (
+        "🏛 <b>О платформе RGS Transfer Market</b>\n\n"
+        "Добро пожаловать в официальный бот трансферного рынка RGS. Здесь вы можете найти клуб, собрать свою команду или управлять карьерой.\n\n"
+        "📌 <b>Основные возможности:</b>\n"
+        "👤 <b>Профиль</b> — ваша карточка игрока, смена ника и позиции.\n"
+        "🛡 <b>Мои клубы</b> — управление составом (доступно только владельцам).\n"
+        "🔍 <b>Поиск клуба</b> — подать анкету Свободного агента.\n"
+        "📝 <b>Подать заявление</b> — создание клуба или заявка в администрацию.\n"
+        "🏃‍♂️ <b>Карьера</b> — приостановка или завершение карьеры.\n\n"
+        "⚙️ <b>Как это работает?</b>\n"
+        "1. Вы регистрируетесь и получаете статус <b>Свободного агента</b>.\n"
+        "2. Подаете заявку на создание клуба (или вас приглашает другой клуб).\n"
+        "3. Все трансферы и объявления проходят проверку администрацией и публикуются в официальном канале.\n\n"
+        "⚠️ <b>Правила:</b>\n"
+        "— Запрещен спам и фейковые заявки.\n"
+        "— Уважайте других игроков и администрацию.\n\n"
+        "📢 <b>Наш канал:</b> @TMRagdollSoccer"
+    )
+    kb = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="📢 Перейти в канал", url="https://t.me/TMRagdollSoccer", style=ButtonStyle.SUCCESS)],
+        [InlineKeyboardButton(text="⬅️ Назад в меню", callback_data="open_menu", style=ButtonStyle.DANGER)]
+    ])
+    await safe_edit_text(callback.message, info_text, reply_markup=kb)
+
+@dp.callback_query(F.data == "support")
+async def cb_support(callback: CallbackQuery):
+    try: await callback.answer()
+    except TelegramBadRequest: pass
+    support_text = (
+        "🆘 <b>Служба поддержки</b>\n\n"
+        "Если у вас возникли технические проблемы, ошибка при верификации или вопросы по работе трансферного рынка, вы можете создать обращение (тикет).\n"
+        "Администрация ответит вам в ближайшее время прямо в этом чате.\n\n"
+        "👑 <b>Владелец:</b> @v7vvv7vvv7vvv"
+    )
+    kb = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="✍️ Написать в поддержку", callback_data="create_ticket", style=ButtonStyle.SUCCESS)],
+        [InlineKeyboardButton(text="⬅️ Назад в меню", callback_data="open_menu", style=ButtonStyle.DANGER)]
+    ])
+    await safe_edit_text(callback.message, support_text, reply_markup=kb)
+
+@dp.callback_query(F.data == "create_ticket")
+async def cb_create_ticket(callback: CallbackQuery, state: FSMContext):
+    try: await callback.answer()
+    except TelegramBadRequest: pass
+    await safe_edit_text(
+        callback.message,
+        "✍️ <b>Напишите ваш вопрос или описание проблемы</b> одним сообщением.\nМы передадим его администрации.",
+        reply_markup=InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="⬅️ Отмена", callback_data="support", style=ButtonStyle.DANGER)]])
+    )
+    await state.set_state(Form.entering_ticket_text)
+
+@dp.message(Form.entering_ticket_text, F.text)
+async def process_ticket_text(message: Message, state: FSMContext):
+    ticket_text = message.text
+    user_data = await get_user(message.from_user.id)
+    roblox_name = user_data[1] if user_data else "Неизвестно"
+
+    async with aiosqlite.connect(DB_PATH) as db:
+        cursor = await db.execute("INSERT INTO tickets (user_id, text) VALUES (?, ?)", (message.from_user.id, ticket_text))
+        ticket_id = cursor.lastrowid
+        await db.commit()
+
+    admin_kb = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="✍️ Ответить", callback_data=f"reply_ticket_{ticket_id}", style=ButtonStyle.SUCCESS)]
+    ])
+
+    await notify_admins(
+        f"🎫 <b>Новый тикет #{ticket_id}</b>\n\n👤 <b>От:</b> @{message.from_user.username} ({message.from_user.id})\n🎮 <b>Roblox:</b> {roblox_name}\n\n📝 <b>Проблема:</b>\n<i>{ticket_text}</i>",
+        reply_markup=admin_kb
+    )
+    await message.answer("✅ Ваше обращение отправлено в поддержку. Ожидайте ответа.")
+    await state.clear()
+
+@dp.callback_query(F.data.startswith("reply_ticket_"), IsAdmin())
+async def cb_admin_reply_ticket(callback: CallbackQuery, state: FSMContext):
+    try: await callback.answer()
+    except TelegramBadRequest: pass
+    ticket_id = int(callback.data.split("_")[2])
+    
+    await state.update_data(ticket_id=ticket_id)
+    await safe_edit_text(callback.message, f"✍️ <b>Ответ на тикет #{ticket_id}</b>\n\nНапишите текст ответа для пользователя:", reply_markup=InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="⬅️ Отмена", callback_data="admin_cancel_reply", style=ButtonStyle.DANGER)]]))
+    await state.set_state(Form.entering_ticket_reply)
+
+@dp.message(Form.entering_ticket_reply, IsAdmin())
+async def process_ticket_reply(message: Message, state: FSMContext):
+    data = await state.get_data()
+    ticket_id = data.get('ticket_id')
+    
+    async with aiosqlite.connect(DB_PATH) as db:
+        async with db.execute("SELECT user_id, text FROM tickets WHERE id = ?", (ticket_id,)) as cursor:
+            ticket = await cursor.fetchone()
+            
+    if not ticket:
+        await message.answer("❌ Тикет не найден.")
+        await state.clear()
+        return
+        
+    user_id, original_text = ticket
+    
+    try:
+        await bot.send_message(
+            user_id,
+            f"🎫 <b>Ответ поддержки по тикету #{ticket_id}</b>\n\n<b>Ваш вопрос:</b>\n<i>{original_text}</i>\n\n<b>Ответ:</b>\n{message.text}",
+            parse_mode="HTML"
+        )
+        await message.answer(f"✅ Ответ успешно отправлен пользователю.")
+    except Exception as e:
+        await message.answer(f"⚠️ Ошибка отправки: {e}. Возможно, пользователь заблокировал бота.")
+        
+    await state.clear()
+
+@dp.callback_query(F.data == "admin_cancel_reply", IsAdmin())
+async def cb_admin_cancel_reply(callback: CallbackQuery, state: FSMContext):
+    try: await callback.answer()
+    except TelegramBadRequest: pass
+    await state.clear()
+    await safe_edit_text(callback.message, "❌ Ответ отменен.")
+
+@dp.callback_query(F.data == "open_menu")
+async def cb_open_menu(callback: CallbackQuery, state: FSMContext):
+    try: await callback.answer()
+    except TelegramBadRequest: pass
+    await state.clear()
+    user_data = await get_user(callback.from_user.id)
+    try: await callback.message.delete()
+    except: pass
+    await send_main_menu(callback.message, user_data)
+
+@dp.callback_query(F.data == "noop")
+async def cb_noop(callback: CallbackQuery):
+    try: await callback.answer()
+    except TelegramBadRequest: pass
+
+# --- ЗАПУСК ---
+async def main():
+    await init_db()
+    print("Бот успешно запущен!")
+    
+    try:
+        await bot.send_message(CHANNEL_ID, "🚀 <b>Бот успешно перезапущен и готов к работе!</b>", parse_mode="HTML")
+    except Exception as e:
+        print(f"Не удалось отправить уведомление в канал: {e}")
+
+    await dp.start_polling(bot, drop_pending_updates=True)
+
+if __name__ == "__main__":
+    asyncio.run(main())
