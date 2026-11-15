@@ -1,27 +1,36 @@
-import sys
+import sys, faulthandler
+faulthandler.enable(file=sys.stdout)
 print("BOOT", sys.version, __file__, flush=True)
 
-try:
-    import asyncio
-    import os
-    import logging
-    import traceback
-    import aiosqlite
-    import aiohttp
-    from datetime import datetime, timedelta
-    from aiogram import Bot, Dispatcher, types, F
-    from aiogram.filters import CommandStart, Command, BaseFilter
-    from aiogram.fsm.context import FSMContext
-    from aiogram.fsm.state import State, StatesGroup
-    from aiogram.types import Message, URLInputFile, InlineKeyboardMarkup, InlineKeyboardButton, CallbackQuery
-    from aiogram.exceptions import TelegramBadRequest
-except BaseException:
-    import traceback as _tb
-    import time as _time
-    _tb.print_exc(file=sys.stdout)
-    sys.stdout.flush()
-    _time.sleep(3600)
-    raise
+def mem():
+    for p in ("/sys/fs/cgroup/memory.max", "/sys/fs/cgroup/memory.current",
+              "/sys/fs/cgroup/memory/memory.limit_in_bytes",
+              "/sys/fs/cgroup/memory/memory.usage_in_bytes"):
+        try:
+            print(p, open(p).read().strip(), flush=True)
+        except Exception:
+            pass
+
+mem()
+for name in ["asyncio", "os", "logging", "traceback", "aiohttp", "aiosqlite", "pydantic", "aiogram"]:
+    print("importing", name, flush=True)
+    __import__(name)
+    print("ok", name, flush=True)
+mem()
+
+import asyncio
+import os
+import logging
+import traceback
+import aiosqlite
+import aiohttp
+from datetime import datetime, timedelta
+from aiogram import Bot, Dispatcher, types, F
+from aiogram.filters import CommandStart, Command, BaseFilter
+from aiogram.fsm.context import FSMContext
+from aiogram.fsm.state import State, StatesGroup
+from aiogram.types import Message, URLInputFile, InlineKeyboardMarkup, InlineKeyboardButton, CallbackQuery
+from aiogram.exceptions import TelegramBadRequest
 
 print("IMPORTS OK", flush=True)
 
