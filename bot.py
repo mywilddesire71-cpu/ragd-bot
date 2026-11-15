@@ -3,6 +3,8 @@ import aiosqlite
 import aiohttp
 import os
 import sys
+import logging
+import traceback
 from datetime import datetime, timedelta
 from aiogram import Bot, Dispatcher, types, F
 from aiogram.filters import CommandStart, Command, BaseFilter
@@ -10,6 +12,15 @@ from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
 from aiogram.types import Message, URLInputFile, InlineKeyboardMarkup, InlineKeyboardButton, CallbackQuery
 from aiogram.exceptions import TelegramBadRequest
+
+# --- ЛОГИРОВАНИЕ (ПРИНУДИТЕЛЬНЫЙ ВЫВОД В КОНСОЛЬ) ---
+logging.basicConfig(
+    level=logging.INFO,
+    format="[%(asctime)s] %(levelname)s - %(message)s",
+    stream=sys.stdout,
+    force=True
+)
+logger = logging.getLogger(__name__)
 
 # --- НАСТРОЙКИ ---
 BOT_TOKEN = os.getenv("BOT_TOKEN")
@@ -20,10 +31,10 @@ CHANNEL_ID = "@TMRagdollSoccer"
 ADMIN_CHAT_ID = -1004376666585
 
 if not BOT_TOKEN:
-    print("❌ НЕТ ТОКЕНА BOT_TOKEN!")
+    logger.error("❌ КРИТИЧЕСКАЯ ОШИБКА: Переменная BOT_TOKEN не найдена!")
     sys.exit(1)
 
-print(f"✅ Токен загружен. Стартую бота...")
+logger.info("✅ Токен успешно загружен.")
 
 bot = Bot(token=BOT_TOKEN)
 dp = Dispatcher()
@@ -86,7 +97,7 @@ async def init_db():
         try: await db.execute("INSERT INTO settings (key, value) VALUES ('admin_apps_open', 'True')")
         except aiosqlite.IntegrityError: pass
         await db.commit()
-    print("✅ БД инициализирована.")
+    logger.info("✅ База данных успешно инициализирована.")
 
 async def is_admin(user_id: int) -> bool:
     if user_id == OWNER_ID: return True
@@ -98,11 +109,11 @@ async def notify_admins(text: str, reply_markup=None, photo=None):
     try:
         if photo: await bot.send_photo(OWNER_ID, photo=photo, caption=text, parse_mode="HTML", reply_markup=reply_markup)
         else: await bot.send_message(OWNER_ID, text, parse_mode="HTML", reply_markup=reply_markup)
-    except Exception as e: print(f"Ошибка владельцу: {e}")
+    except Exception as e: logger.error(f"Ошибка отправки владельцу: {e}")
     try:
         if photo: await bot.send_photo(ADMIN_CHAT_ID, photo=photo, caption=text, parse_mode="HTML", reply_markup=reply_markup)
         else: await bot.send_message(ADMIN_CHAT_ID, text, parse_mode="HTML", reply_markup=reply_markup)
-    except Exception as e: print(f"Ошибка в чат: {e}")
+    except Exception as e: logger.error(f"Ошибка отправки в чат: {e}")
 
 async def check_limit(telegram_id: int, app_type: str, daily_limit: int, cooldown_hours: float) -> tuple[bool, str]:
     async with aiosqlite.connect(DB_PATH) as db:
@@ -834,16 +845,21 @@ async def cb_noop(callback: CallbackQuery):
 
 # --- ЗАПУСК ---
 async def main():
-    await init_db()
-    print("⏳ Запускаю polling...")
     try:
+        logger.info("⏳ Начинаю инициализацию БД...")
+        await init_db()
+        
+        logger.info("⏳ Сбрасываю вебхук...")
         await bot.delete_webhook(drop_pending_updates=True)
-        print("✅ Вебхук сброшен.")
+        logger.info("✅ Вебхук сброшен.")
+        
+        logger.info("✅ Бот успешно запущен. Начинаю polling...")
+        await dp.start_polling(bot)
     except Exception as e:
-        print(f"⚠️ Ошибка вебхука: {e}")
-    
-    # Правильный запуск polling в aiogram 3.x
-    await dp.start_polling(bot, drop_pending_updates=True)
+        logger.error(f"❌ КРИТИЧЕСКАЯ ОШИБКА ПРИ ЗАПУСКЕ: {e}")
+        traceback.print_exc(file=sys.stdout)
+        # Ждем, чтобы FadeHost не перезапускал бота по кругу
+        await asyncio.Event().wait()
 
 if __name__ == "__main__":
     asyncio.run(main())
