@@ -3,7 +3,6 @@ import aiosqlite
 import aiohttp
 import os
 import sys
-import logging
 from datetime import datetime, timedelta
 from aiogram import Bot, Dispatcher, types, F
 from aiogram.filters import CommandStart, Command, BaseFilter
@@ -20,53 +19,28 @@ OWNER_ID = 2046978907
 CHANNEL_ID = "@TMRagdollSoccer"
 ADMIN_CHAT_ID = -1004376666585
 
-# Настройка логирования
-logging.basicConfig(
-    level=logging.INFO,
-    format="%(asctime)s - %(levelname)s - %(message)s",
-    stream=sys.stdout
-)
-
-# --- ИНИЦИАЛИЗАЦИЯ ---
 if not BOT_TOKEN:
-    logging.error("❌ КРИТИЧЕСКАЯ ОШИБКА: Переменная BOT_TOKEN не найдена!")
+    print("❌ НЕТ ТОКЕНА BOT_TOKEN!")
     sys.exit(1)
+
+print(f"✅ Токен загружен. Стартую бота...")
 
 bot = Bot(token=BOT_TOKEN)
 dp = Dispatcher()
 
-POSITIONS = {
-    "Вратарь": "🧤",
-    "Защитник": "🛡️",
-    "Полузащитник": "🎯",
-    "Нападающий": "⚡"
-}
+POSITIONS = {"Вратарь": "🧤", "Защитник": "🛡️", "Полузащитник": "🎯", "Нападающий": "⚡"}
+APP_TYPES = {"free_agent": "Свободный агент", "club_app": "Заявка на клуб", "admin_app": "Заявка в администрацию", "nick_change": "Смена ника", "career_finish": "Завершение карьеры", "player_transfer": "Трансфер игрока", "club_search": "Поиск игроков (Клуб)", "friendly_match": "Поиск товы", "ad": "Объявление / Реклама"}
 
-APP_TYPES = {
-    "free_agent": "Свободный агент",
-    "club_app": "Заявка на клуб",
-    "admin_app": "Заявка в администрацию",
-    "nick_change": "Смена ника",
-    "career_finish": "Завершение карьеры",
-    "player_transfer": "Трансфер игрока",
-    "club_search": "Поиск игроков (Клуб)",
-    "friendly_match": "Поиск товы",
-    "ad": "Объявление / Реклама"
-}
-
-# --- БЕЗОПАСНОЕ РЕДАКТИРОВАНИЕ ---
 async def safe_edit_text(message: Message, text: str, reply_markup=None, parse_mode="HTML"):
     try:
         await message.edit_text(text, reply_markup=reply_markup, parse_mode=parse_mode)
     except TelegramBadRequest:
         pass
 
-# --- ФИЛЬТР ДЛЯ ПРОВЕРКИ ПРАВ АДМИНА ---
 class IsAdmin(BaseFilter):
     async def __call__(self, event: Message | CallbackQuery) -> bool:
         return await is_admin(event.from_user.id)
 
-# --- СОСТОЯНИЯ ---
 class Form(StatesGroup):
     waiting_for_roblox_nick = State()
     entering_requirements = State()
@@ -91,34 +65,29 @@ class Form(StatesGroup):
 
 # --- БАЗА ДАННЫХ ---
 async def init_db():
-    try:
-        async with aiosqlite.connect(DB_PATH) as db:
-            await db.execute("CREATE TABLE IF NOT EXISTS clubs (id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT NOT NULL, logo_id TEXT, owner_id INTEGER)")
-            await db.execute("CREATE TABLE IF NOT EXISTS users (telegram_id INTEGER PRIMARY KEY, roblox_username TEXT NOT NULL, roblox_id INTEGER, display_name TEXT, position TEXT DEFAULT 'Не выбрана', career_status TEXT DEFAULT 'Активна', telegram_username TEXT)")
-            await db.execute("CREATE TABLE IF NOT EXISTS contracts (id INTEGER PRIMARY KEY AUTOINCREMENT, telegram_id INTEGER, club_id INTEGER, squad_type TEXT DEFAULT 'Основа', UNIQUE(telegram_id, club_id))")
-            await db.execute("CREATE TABLE IF NOT EXISTS applications (id INTEGER PRIMARY KEY AUTOINCREMENT, telegram_id INTEGER, type TEXT, text1 TEXT, text2 TEXT, text3 TEXT, status TEXT DEFAULT 'pending', created_at DATETIME)")
-            await db.execute("CREATE TABLE IF NOT EXISTS settings (key TEXT PRIMARY KEY, value TEXT)")
-            await db.execute("CREATE TABLE IF NOT EXISTS tickets (id INTEGER PRIMARY KEY AUTOINCREMENT, user_id INTEGER, text TEXT, status TEXT DEFAULT 'open')")
-            await db.execute("CREATE TABLE IF NOT EXISTS admins (telegram_id INTEGER PRIMARY KEY, added_by INTEGER)")
-            
-            try: await db.execute("ALTER TABLE users ADD COLUMN position TEXT DEFAULT 'Не выбрана'")
-            except aiosqlite.OperationalError: pass
-            try: await db.execute("ALTER TABLE users ADD COLUMN career_status TEXT DEFAULT 'Активна'")
-            except aiosqlite.OperationalError: pass
-            try: await db.execute("ALTER TABLE users ADD COLUMN telegram_username TEXT")
-            except aiosqlite.OperationalError: pass
-            try: await db.execute("ALTER TABLE applications ADD COLUMN created_at DATETIME")
-            except aiosqlite.OperationalError: pass
-            
-            try: await db.execute("INSERT INTO settings (key, value) VALUES ('admin_apps_open', 'True')")
-            except aiosqlite.IntegrityError: pass
-            await db.commit()
-            logging.info("✅ База данных успешно инициализирована.")
-    except Exception as e:
-        logging.error(f"❌ Ошибка базы данных: {e}")
-        raise
+    async with aiosqlite.connect(DB_PATH) as db:
+        await db.execute("CREATE TABLE IF NOT EXISTS clubs (id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT NOT NULL, logo_id TEXT, owner_id INTEGER)")
+        await db.execute("CREATE TABLE IF NOT EXISTS users (telegram_id INTEGER PRIMARY KEY, roblox_username TEXT NOT NULL, roblox_id INTEGER, display_name TEXT, position TEXT DEFAULT 'Не выбрана', career_status TEXT DEFAULT 'Активна', telegram_username TEXT)")
+        await db.execute("CREATE TABLE IF NOT EXISTS contracts (id INTEGER PRIMARY KEY AUTOINCREMENT, telegram_id INTEGER, club_id INTEGER, squad_type TEXT DEFAULT 'Основа', UNIQUE(telegram_id, club_id))")
+        await db.execute("CREATE TABLE IF NOT EXISTS applications (id INTEGER PRIMARY KEY AUTOINCREMENT, telegram_id INTEGER, type TEXT, text1 TEXT, text2 TEXT, text3 TEXT, status TEXT DEFAULT 'pending', created_at DATETIME)")
+        await db.execute("CREATE TABLE IF NOT EXISTS settings (key TEXT PRIMARY KEY, value TEXT)")
+        await db.execute("CREATE TABLE IF NOT EXISTS tickets (id INTEGER PRIMARY KEY AUTOINCREMENT, user_id INTEGER, text TEXT, status TEXT DEFAULT 'open')")
+        await db.execute("CREATE TABLE IF NOT EXISTS admins (telegram_id INTEGER PRIMARY KEY, added_by INTEGER)")
+        
+        try: await db.execute("ALTER TABLE users ADD COLUMN position TEXT DEFAULT 'Не выбрана'")
+        except aiosqlite.OperationalError: pass
+        try: await db.execute("ALTER TABLE users ADD COLUMN career_status TEXT DEFAULT 'Активна'")
+        except aiosqlite.OperationalError: pass
+        try: await db.execute("ALTER TABLE users ADD COLUMN telegram_username TEXT")
+        except aiosqlite.OperationalError: pass
+        try: await db.execute("ALTER TABLE applications ADD COLUMN created_at DATETIME")
+        except aiosqlite.OperationalError: pass
+        
+        try: await db.execute("INSERT INTO settings (key, value) VALUES ('admin_apps_open', 'True')")
+        except aiosqlite.IntegrityError: pass
+        await db.commit()
+    print("✅ БД инициализирована.")
 
-# --- ВСПОМОГАТЕЛЬНЫЕ ФУНКЦИИ ---
 async def is_admin(user_id: int) -> bool:
     if user_id == OWNER_ID: return True
     async with aiosqlite.connect(DB_PATH) as db:
@@ -127,34 +96,27 @@ async def is_admin(user_id: int) -> bool:
 
 async def notify_admins(text: str, reply_markup=None, photo=None):
     try:
-        if photo:
-            await bot.send_photo(OWNER_ID, photo=photo, caption=text, parse_mode="HTML", reply_markup=reply_markup)
-        else:
-            await bot.send_message(OWNER_ID, text, parse_mode="HTML", reply_markup=reply_markup)
-    except Exception as e:
-        logging.error(f"Ошибка отправки владельцу: {e}")
-
+        if photo: await bot.send_photo(OWNER_ID, photo=photo, caption=text, parse_mode="HTML", reply_markup=reply_markup)
+        else: await bot.send_message(OWNER_ID, text, parse_mode="HTML", reply_markup=reply_markup)
+    except Exception as e: print(f"Ошибка владельцу: {e}")
     try:
-        if photo:
-            await bot.send_photo(ADMIN_CHAT_ID, photo=photo, caption=text, parse_mode="HTML", reply_markup=reply_markup)
-        else:
-            await bot.send_message(ADMIN_CHAT_ID, text, parse_mode="HTML", reply_markup=reply_markup)
-    except Exception as e:
-        logging.error(f"Ошибка отправки в чат: {e}")
+        if photo: await bot.send_photo(ADMIN_CHAT_ID, photo=photo, caption=text, parse_mode="HTML", reply_markup=reply_markup)
+        else: await bot.send_message(ADMIN_CHAT_ID, text, parse_mode="HTML", reply_markup=reply_markup)
+    except Exception as e: print(f"Ошибка в чат: {e}")
 
 async def check_limit(telegram_id: int, app_type: str, daily_limit: int, cooldown_hours: float) -> tuple[bool, str]:
     async with aiosqlite.connect(DB_PATH) as db:
         if daily_limit > 0:
             async with db.execute("SELECT COUNT(*) FROM applications WHERE telegram_id = ? AND type = ? AND date(created_at) = date('now')", (telegram_id, app_type)) as cursor:
                 if (await cursor.fetchone())[0] >= daily_limit:
-                    return False, f"❌ Вы достигли дневного лимита ({daily_limit} раз(а) в день)."
+                    return False, f"❌ Дневной лимит ({daily_limit} раз(а))."
         if cooldown_hours > 0:
             async with db.execute("SELECT created_at FROM applications WHERE telegram_id = ? AND type = ? ORDER BY id DESC LIMIT 1", (telegram_id, app_type)) as cursor:
                 row = await cursor.fetchone()
                 if row and row[0]:
                     time_diff = datetime.utcnow() - datetime.strptime(row[0], "%Y-%m-%d %H:%M:%S")
                     if time_diff < timedelta(hours=cooldown_hours):
-                        return False, f"⏳ Подождите. Следующая попытка через {int((timedelta(hours=cooldown_hours) - time_diff).total_seconds() // 60)} мин."
+                        return False, f"⏳ Подождите {int((timedelta(hours=cooldown_hours) - time_diff).total_seconds() // 60)} мин."
     return True, ""
 
 async def get_user(telegram_id: int):
@@ -401,10 +363,8 @@ async def cb_club_roster(callback: CallbackQuery):
     text = f"👥 <b>Состав: {club_name}</b>\n\n"
     osnova = [p for p in players if p[2] == 'Основа']
     rezerv = [p for p in players if p[2] == 'Резерв']
-    if osnova:
-        text += "🟢 <b>Основа:</b>\n" + "".join([f"• <code>{p[0]}</code> — {POSITIONS.get(p[1], '')} {p[1]}\n" for p in osnova]) + "\n"
-    if rezerv:
-        text += "🟡 <b>Резерв:</b>\n" + "".join([f"• <code>{p[0]}</code> — {POSITIONS.get(p[1], '')} {p[1]}\n" for p in rezerv])
+    if osnova: text += "🟢 <b>Основа:</b>\n" + "".join([f"• <code>{p[0]}</code> — {POSITIONS.get(p[1], '')} {p[1]}\n" for p in osnova]) + "\n"
+    if rezerv: text += "🟡 <b>Резерв:</b>\n" + "".join([f"• <code>{p[0]}</code> — {POSITIONS.get(p[1], '')} {p[1]}\n" for p in rezerv])
     if not osnova and not rezerv: text += "Пусто."
     await safe_edit_text(callback.message, text, reply_markup=InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="⬅️ Назад", callback_data=f"manage_club_{club_id}")]]))
 
@@ -432,7 +392,6 @@ async def process_club_search_reqs(message: Message, state: FSMContext):
     async with aiosqlite.connect(DB_PATH) as db:
         async with db.execute("SELECT name FROM clubs WHERE id = ?", (club_id,)) as cursor:
             club_name = (await cursor.fetchone())[0]
-    user = await get_user(message.from_user.id)
     app_id = await create_application(message.from_user.id, "club_search", data.get('needed_pos'), message.text, club_name)
     await notify_admins(f"🔍 <b>Поиск игроков</b>\nКлуб: {club_name}\nПозиции: {data.get('needed_pos')}\nТребования: {message.text}", reply_markup=InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="✅ Одобрить", callback_data=f"approve_clubsearch_{app_id}"), InlineKeyboardButton(text="❌ Отклонить", callback_data=f"reject_{app_id}")]]))
     await message.answer("⏳ Отправлено.")
@@ -875,23 +834,16 @@ async def cb_noop(callback: CallbackQuery):
 
 # --- ЗАПУСК ---
 async def main():
-    logging.info("🚀 --- ЗАПУСК БОТА ---")
     await init_db()
+    print("⏳ Запускаю polling...")
     try:
         await bot.delete_webhook(drop_pending_updates=True)
-        logging.info("✅ Вебхук сброшен, начинаю polling...")
-        
-        # Запуск с параметром, который не даст скрипту завершиться
-        await dp.start_polling(bot, close_bot_session=True)
+        print("✅ Вебхук сброшен.")
     except Exception as e:
-        logging.error(f"❌ ОШИБКА ВО ВРЕМЯ POLLING: {e}", exc_info=True)
-        # Ждем, чтобы FadeHost не перезапускал бота по кругу
-        await asyncio.Event().wait()
+        print(f"⚠️ Ошибка вебхука: {e}")
+    
+    # Правильный запуск polling в aiogram 3.x
+    await dp.start_polling(bot, drop_pending_updates=True)
 
 if __name__ == "__main__":
-    try:
-        asyncio.run(main())
-    except KeyboardInterrupt:
-        pass
-    except Exception as e:
-        logging.error(f"❌ ФАТАЛЬНАЯ ОШИБКА: {e}", exc_info=True)
+    asyncio.run(main())
